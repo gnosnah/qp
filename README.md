@@ -1,6 +1,6 @@
 # qp
 
-golang version of qp tries
+golang version of qp trie
 
 ## Features
 
