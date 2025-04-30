@@ -1,0 +1,7 @@
+*.out
+*.html
+.env
+.vscode
+.DS_Store
+.idea
+demo*
