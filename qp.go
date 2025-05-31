@@ -6,7 +6,7 @@ import (
 	"math"
 )
 
-type bitmapT = uint16      // bitmap type
+type bitmapT = uint32      // bitmap type, 17 bits, first bit NO_BYTE
 type nibbleIndexT = uint16 // nibble index type
 
 // OnInsertValFn is a function type that processes a new value before insertion.
@@ -105,7 +105,7 @@ func (tr *Trie) findMatch(key []byte, exactMatch bool) *leafNode {
 	}
 }
 
-func (tr *Trie) findInsert(key []byte, index nibbleIndexT) (ptr *trieNode, growBranch bool) {
+func (tr *Trie) findInsert(key []byte, index nibbleIndexT) (ptr *trieNode, grow bool) {
 	ptr = &tr.root
 	for {
 		switch n := (*ptr).(type) {
@@ -185,8 +185,8 @@ func (tr *Trie) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 		return preValue, true
 	}
 
-	ptr, growBranch := tr.findInsert(key, index)
-	if growBranch {
+	ptr, grow := tr.findInsert(key, index)
+	if grow {
 		bn := (*ptr).(*branchNode)
 		bn.growTwigs(index, key, newLeaf)
 	} else {

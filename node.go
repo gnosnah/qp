@@ -38,9 +38,9 @@ func (ln *leafNode) clearCow() {
 }
 
 type branchNode struct {
-	twigs  []trieNode
-	index  nibbleIndexT // nibble index, start from 0
+	twigs  []trieNode   // up to 17 twigs, 0th is NO_BYTE
 	bitmap bitmapT      // store which slot is not-NULL
+	index  nibbleIndexT // nibble index, start from 0
 	// cow
 	cow bool
 }
@@ -91,7 +91,7 @@ func (bn *branchNode) twig(i int) *trieNode {
 }
 
 func (bn *branchNode) twigOffsetMax() int {
-	return bits.OnesCount16(uint16(bn.bitmap))
+	return bits.OnesCount32(bn.bitmap)
 }
 
 func (bn *branchNode) twigBit(key []byte) bitmapT {

@@ -11,30 +11,28 @@ func nibbleIndex(key1, key2 []byte) (index nibbleIndexT, match bool) {
 		a = key1[i]
 		b = key2[i]
 		if a != b {
-			break
+			if (a & 0xf0) == (b & 0xf0) {
+				// a,b upper nibble equals, return lower nibble
+				return 1 + i<<1, false
+			} else {
+				return i << 1, false
+			}
 		}
 		i++
 	}
 
 	index = i << 1
-
-	if i == minLen {
-		if len1 == len2 {
-			return index, true
-		}
-		return index, false
+	if len1 == len2 {
+		return index, true
 	}
 
-	if (a & 0xf0) == (b & 0xf0) {
-		index += 1
-	}
 	return index, false
 }
 
 func nibbleBit(index nibbleIndexT, key []byte) bitmapT {
 	byteIndex := index >> 1
 	if byteIndex >= nibbleIndexT(len(key)) {
-		return bitmapT(1)
+		return bitmapT(1 << 0) // NO_BYTE
 	}
 	k := key[byteIndex]
 
@@ -46,5 +44,5 @@ func nibbleBit(index nibbleIndexT, key []byte) bitmapT {
 		// upper nibble
 		nibble = k >> 4
 	}
-	return 1 << nibble
+	return 1 << (nibble + 1)
 }
