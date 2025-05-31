@@ -71,25 +71,25 @@ func Test_NibbleBit(t *testing.T) {
 			name:     "Byte index out of bounds",
 			index:    10,
 			key:      []byte{0x12, 0x34},
-			expected: bitmapT(1),
+			expected: bitmapT(1 << 0),
 		},
 		{
 			name:     "Upper nibble of last byte",
 			index:    2,
 			key:      []byte{0x12, 0x34},
-			expected: 1 << 0x3,
+			expected: 1 << (0x03 + 1),
 		},
 		{
 			name:     "Lower nibble of last byte",
 			index:    3,
 			key:      []byte{0x12, 0x34},
-			expected: 1 << 0x4,
+			expected: 1 << (0x04 + 1),
 		},
 		{
 			name:     "Nibble Value Zero",
 			index:    0,
 			key:      []byte{0x00},
-			expected: 1 << 0x0,
+			expected: 1 << (0x0 + 1),
 		},
 	}
 

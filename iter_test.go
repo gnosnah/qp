@@ -31,13 +31,23 @@ func Test_SimpleIter(t *testing.T) {
 			data:     []string{"b", "a", "c", "f", "cef", "e", "cefy"},
 			expected: []string{"a", "b", "c", "cef", "cefy", "e", "f"},
 		},
+		{
+			name:     "no byte iter case1",
+			data:     []string{"c\001\000a", "c\000a", "d\000ac", "d\000a", "d\000aa", "d\000a\001"},
+			expected: []string{"c\000a", "c\001\000a", "d\000a", "d\000a\001", "d\000aa", "d\000ac"},
+		},
+		{
+			name:     "no byte iter case2",
+			data:     []string{"d\000a\001", "d\000a", "d\000a\002", "d\000a\003"},
+			expected: []string{"d\000a", "d\000a\001", "d\000a\002", "d\000a\003"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tr := New()
-			for _, d := range tt.data {
-				tr.Upsert([]byte(d), value1)
+			for idx := 0; idx < len(tt.data); idx++ {
+				tr.Upsert([]byte(tt.data[idx]), value1)
 			}
 
 			var result []string
