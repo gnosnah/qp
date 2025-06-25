@@ -270,6 +270,17 @@ func Test_GetLessOrEqual(t *testing.T) {
 				{"ceka", "cefy", false},
 			},
 		},
+		{
+			name: "simple trie with no byte",
+			data: []string{"c\000a", "c\000a\000b", "c\000b", "c\000abc", "d\000a", "e\000abc"},
+			items: []expects{
+				{"c\000a\000b\001", "c\000a\000b", false},
+				{"c\000a\000abc", "c\000a", false},
+				{"c\000a", "c\000a", true},
+				{"c\000c", "c\000b", false},
+				{"e\000a", "d\000a", false},
+			},
+		},
 	}
 
 	for _, tt := range tests {

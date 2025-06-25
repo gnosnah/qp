@@ -237,6 +237,7 @@ func (tr *Trie) findPrev(index nibbleIndexT, key []byte) (prev *trieNode, cur *t
 	for {
 		switch n := (*cur).(type) {
 		case *leafNode:
+			needCheckCur = true
 			return
 		case *branchNode:
 			bn := (*cur).(*branchNode)
@@ -244,7 +245,7 @@ func (tr *Trie) findPrev(index nibbleIndexT, key []byte) (prev *trieNode, cur *t
 				needCheckCur = true
 				return
 			}
-			b := n.twigBit(key)
+			b := bn.twigBit(key)
 			i := bn.twigOffset(b)
 			if i > 0 {
 				prev = bn.twig(i - 1)
