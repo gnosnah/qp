@@ -12,15 +12,14 @@ type KVPair struct {
 	Value any
 }
 
+// Walk traverses the entire trie and applies the given function to each element's key
+// and value. If the function returns true, the corresponding key-value pair is included in the result.
 func (tr *Trie) Walk(max int, f WalkFn) (pairs []KVPair) {
 	if f == nil {
 		f = defaultWalkFn
 	}
 	it := tr.Iterator()
-	for {
-		if len(pairs) >= max {
-			break
-		}
+	for len(pairs) < max {
 		k, v, ok := it.Next()
 		if !ok {
 			break

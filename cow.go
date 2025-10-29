@@ -54,10 +54,8 @@ func (tx *Txn) Get(key []byte) (val any, found bool) {
 func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	must(key)
 
-	newLeaf := &leafNode{key: key, value: tx.newTr.onInsert(value), cow: false}
-
 	if tx.newTr.root == nil {
-		tx.newTr.root = newLeaf
+		tx.newTr.root = &leafNode{key: key, value: tx.newTr.onInsert(value), cow: false}
 		tx.newTr.size++
 		return nil, false
 	}
@@ -74,6 +72,7 @@ func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 		return oldVal, true
 	}
 
+	newLeaf := &leafNode{key: key, value: tx.newTr.onInsert(value), cow: false}
 	if growBranch {
 		bn := (*ptr).(*branchNode)
 		bn.growTwigs(index, key, newLeaf)

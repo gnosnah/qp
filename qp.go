@@ -169,10 +169,8 @@ func (tr *Trie) Get(key []byte) (val any, found bool) {
 func (tr *Trie) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	must(key)
 
-	newLeaf := &leafNode{key: key, value: tr.onInsert(value)}
-
 	if tr.root == nil {
-		tr.root = newLeaf
+		tr.root = &leafNode{key: key, value: tr.onInsert(value)}
 		tr.size++
 		return nil, false
 	}
@@ -185,6 +183,7 @@ func (tr *Trie) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 		return preValue, true
 	}
 
+	newLeaf := &leafNode{key: key, value: tr.onInsert(value)}
 	ptr, grow := tr.findInsert(key, index)
 	if grow {
 		bn := (*ptr).(*branchNode)
