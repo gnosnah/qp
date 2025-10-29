@@ -382,7 +382,9 @@ func loadTestData(path string) [][]byte {
 	if err != nil {
 		panic("open err: " + err.Error())
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 
 	var data [][]byte
 	rd := bufio.NewReader(f)
