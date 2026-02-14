@@ -26,6 +26,14 @@ func (tr *Trie) Txn() *Txn {
 	return &tx
 }
 
+func (tx *Txn) OldTrie() *Trie {
+	return tx.oldTr
+}
+
+func (tx *Txn) NewTrie() *Trie {
+	return tx.newTr
+}
+
 // Commit finalizes the transaction by setting the old trie to the new trie
 // and clearing the new trie reference. Returns the committed trie.
 func (tx *Txn) Commit() *Trie {
