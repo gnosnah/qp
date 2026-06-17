@@ -96,6 +96,13 @@ go get -u github.com/gnosnah/qp
 
 ```
 
+Notes:
+
+- Assign the return value: `tr = tx.Commit()` or `tr = tx.Abort()`.
+- Do not modify the trie directly while a transaction is open.
+- Do not run concurrent transactions on the same trie.
+- Do not start a nested transaction from `tx.NewTrie()`.
+
 ### customize
 
 - onInsert

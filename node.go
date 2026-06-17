@@ -22,7 +22,7 @@ func (*leafNode) isBranch() bool {
 }
 
 func (ln *leafNode) dup() trieNode {
-	return &leafNode{key: ln.key, value: ln.value, cow: ln.cow}
+	return &leafNode{key: ln.key, value: ln.value}
 }
 
 func (ln *leafNode) cowMarked() bool {
@@ -55,13 +55,12 @@ func (bn *branchNode) dup() trieNode {
 	copy(newBn.twigs, bn.twigs)
 	newBn.index = bn.index
 	newBn.bitmap = bn.bitmap
-	newBn.cow = bn.cow
 	return &newBn
 }
 
 func (bn *branchNode) markTwigs() {
-	for _, twig := range bn.twigs {
-		twig.markCow()
+	for i := 0; i < bn.twigOffsetMax(); i++ {
+		bn.twigs[i].markCow()
 	}
 }
 
