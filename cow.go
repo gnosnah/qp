@@ -10,6 +10,9 @@ type Txn struct {
 // Txn creates a new transaction for the Trie. It returns a transaction object
 // that provides copy-on-write functionality for modifying the trie. The original
 // trie remains unchanged until the transaction is committed.
+//
+// A trie must not be modified directly while a transaction is open, and
+// transactions on the same trie are not safe for concurrent use.
 func (tr *Trie) Txn() *Txn {
 	var tx Txn
 	tx.newTr = &Trie{

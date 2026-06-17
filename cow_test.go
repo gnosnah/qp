@@ -100,7 +100,7 @@ func Test_CowUpsert(t *testing.T) {
 				t.Errorf("oldTr.Size got %v want %v", tx.oldTr.Size(), len(resultOld))
 			}
 			if tx.newTr.Size() != len(resultNew) {
-				t.Errorf("newTr.Size got %v want %v", tx.oldTr.Size(), len(resultOld))
+				t.Errorf("newTr.Size got %v want %v", tx.newTr.Size(), len(resultNew))
 			}
 		})
 	}
@@ -181,9 +181,206 @@ func Test_CowDelete(t *testing.T) {
 				t.Errorf("oldTr.Size got %v want %v", tx.oldTr.Size(), len(resultOld))
 			}
 			if tx.newTr.Size() != len(resultNew) {
-				t.Errorf("newTr.Size got %v want %v", tx.oldTr.Size(), len(resultOld))
+				t.Errorf("newTr.Size got %v want %v", tx.newTr.Size(), len(resultNew))
 			}
 		})
+	}
+}
+
+func Test_CowTxnAfterRemoveTwig(t *testing.T) {
+	tr := New()
+	tr.Upsert([]byte("a"), value1)
+	tr.Upsert([]byte("b"), value2)
+	tr.Upsert([]byte("c"), value1)
+
+	tr.Delete([]byte("b"))
+
+	tx := tr.Txn()
+	tx.Upsert([]byte("d"), value2)
+	tr = tx.Commit()
+
+	result := tr.Walk(math.MaxInt, nil)
+	expect := []KVPair{
+		{[]byte("a"), value1},
+		{[]byte("c"), value1},
+		{[]byte("d"), value2},
+	}
+	if !reflect.DeepEqual(result, expect) {
+		t.Errorf("Walk got %v want %v", result, expect)
+	}
+
+	tx2 := tr.Txn()
+	tx2.Upsert([]byte("e"), value1)
+	tr = tx2.Commit()
+
+	result = tr.Walk(math.MaxInt, nil)
+	expect = append(expect, KVPair{[]byte("e"), value1})
+	if !reflect.DeepEqual(result, expect) {
+		t.Errorf("Walk after second txn got %v want %v", result, expect)
+	}
+}
+
+func Test_CowCommitDeleteThenNewTxn(t *testing.T) {
+	tr := New()
+	tr.Upsert([]byte("a"), value1)
+	tr.Upsert([]byte("b"), value2)
+	tr.Upsert([]byte("c"), value1)
+
+	tx := tr.Txn()
+	tx.Delete([]byte("b"))
+	tr = tx.Commit()
+
+	tx2 := tr.Txn()
+	tx2.Upsert([]byte("d"), value2)
+	tr = tx2.Abort()
+
+	result := tr.Walk(math.MaxInt, nil)
+	expect := []KVPair{
+		{[]byte("a"), value1},
+		{[]byte("c"), value1},
+	}
+	if !reflect.DeepEqual(result, expect) {
+		t.Errorf("Walk got %v want %v", result, expect)
+	}
+}
+
+func Test_CowGrowTwigs(t *testing.T) {
+	tr := New()
+	tr.Upsert([]byte("ab"), value1)
+	tr.Upsert([]byte("ac"), value2)
+
+	tx := tr.Txn()
+	tx.Upsert([]byte("ad"), value1)
+
+	resultNew := tx.newTr.Walk(math.MaxInt, nil)
+	expectNew := []KVPair{
+		{[]byte("ab"), value1},
+		{[]byte("ac"), value2},
+		{[]byte("ad"), value1},
+	}
+	if !reflect.DeepEqual(resultNew, expectNew) {
+		t.Errorf("newTr.Walk got %v want %v", resultNew, expectNew)
+	}
+
+	resultOld := tx.oldTr.Walk(math.MaxInt, nil)
+	expectOld := []KVPair{
+		{[]byte("ab"), value1},
+		{[]byte("ac"), value2},
+	}
+	if !reflect.DeepEqual(resultOld, expectOld) {
+		t.Errorf("oldTr.Walk got %v want %v", resultOld, expectOld)
+	}
+}
+
+func Test_CowDeleteCollapse(t *testing.T) {
+	tr := New()
+	tr.Upsert([]byte("a"), value1)
+	tr.Upsert([]byte("b"), value2)
+
+	tx := tr.Txn()
+	oldVal, found := tx.Delete([]byte("a"))
+	if !found || oldVal != value1 {
+		t.Fatalf("Delete(a) got %v %v want %v true", oldVal, found, value1)
+	}
+
+	resultNew := tx.newTr.Walk(math.MaxInt, nil)
+	expectNew := []KVPair{{[]byte("b"), value2}}
+	if !reflect.DeepEqual(resultNew, expectNew) {
+		t.Errorf("newTr.Walk got %v want %v", resultNew, expectNew)
+	}
+
+	resultOld := tx.oldTr.Walk(math.MaxInt, nil)
+	expectOld := []KVPair{
+		{[]byte("a"), value1},
+		{[]byte("b"), value2},
+	}
+	if !reflect.DeepEqual(resultOld, expectOld) {
+		t.Errorf("oldTr.Walk got %v want %v", resultOld, expectOld)
+	}
+
+	tr = tx.Commit()
+	result := tr.Walk(math.MaxInt, nil)
+	if !reflect.DeepEqual(result, expectNew) {
+		t.Errorf("Walk after commit got %v want %v", result, expectNew)
+	}
+}
+
+func Test_CowDeleteThenUpsertInTxn(t *testing.T) {
+	tr := New()
+	tr.Upsert([]byte("a"), value1)
+	tr.Upsert([]byte("b"), value2)
+	tr.Upsert([]byte("c"), value1)
+
+	tx := tr.Txn()
+	if _, found := tx.Delete([]byte("b")); !found {
+		t.Fatal("Delete(b) not found")
+	}
+	tx.Upsert([]byte("d"), value2)
+
+	resultNew := tx.newTr.Walk(math.MaxInt, nil)
+	expectNew := []KVPair{
+		{[]byte("a"), value1},
+		{[]byte("c"), value1},
+		{[]byte("d"), value2},
+	}
+	if !reflect.DeepEqual(resultNew, expectNew) {
+		t.Errorf("newTr.Walk got %v want %v", resultNew, expectNew)
+	}
+
+	resultOld := tx.oldTr.Walk(math.MaxInt, nil)
+	expectOld := []KVPair{
+		{[]byte("a"), value1},
+		{[]byte("b"), value2},
+		{[]byte("c"), value1},
+	}
+	if !reflect.DeepEqual(resultOld, expectOld) {
+		t.Errorf("oldTr.Walk got %v want %v", resultOld, expectOld)
+	}
+}
+
+func Test_CowOnInsert(t *testing.T) {
+	onInsert := func(newVal any) any {
+		return newVal.(int) * 10
+	}
+	tr := New(WithOnInsert(onInsert))
+
+	tx := tr.Txn()
+	tx.Upsert([]byte("a"), 5)
+
+	val, found := tx.Get([]byte("a"))
+	if !found || val.(int) != 50 {
+		t.Errorf("Get(a) got %v found=%v want 50 true", val, found)
+	}
+
+	tr = tx.Commit()
+	val, found = tr.Get([]byte("a"))
+	if !found || val.(int) != 50 {
+		t.Errorf("after commit Get(a) got %v found=%v want 50 true", val, found)
+	}
+}
+
+func Test_CowOnUpdate(t *testing.T) {
+	onUpdate := func(newVal, oldVal any) any {
+		return newVal.(int) + oldVal.(int)
+	}
+	tr := New(WithOnUpdate(onUpdate))
+	tr.Upsert([]byte("a"), 1)
+
+	tx := tr.Txn()
+	oldVal, isUpdate := tx.Upsert([]byte("a"), 2)
+	if !isUpdate || oldVal.(int) != 1 {
+		t.Fatalf("Upsert(a) got oldVal=%v isUpdate=%v want 1 true", oldVal, isUpdate)
+	}
+
+	val, found := tx.Get([]byte("a"))
+	if !found || val.(int) != 3 {
+		t.Errorf("Get(a) got %v found=%v want 3 true", val, found)
+	}
+
+	resultOld := tx.oldTr.Walk(math.MaxInt, nil)
+	expectOld := []KVPair{{[]byte("a"), 1}}
+	if !reflect.DeepEqual(resultOld, expectOld) {
+		t.Errorf("oldTr.Walk got %v want %v", resultOld, expectOld)
 	}
 }
 
