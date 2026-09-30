@@ -1,200 +1,121 @@
 package qp
 
-import "bytes"
-
+// Txn is a copy-on-write transaction against a Trie.
+//
+// Only one transaction may be open at a time in a snapshot family
+// (a trie and the tries committed from it). Nested transactions and
+// concurrent transactions are not supported. Txn is not safe for concurrent use.
 type Txn struct {
 	oldTr *Trie
 	newTr *Trie
 }
 
-// Txn creates a new transaction for the Trie. It returns a transaction object
-// that provides copy-on-write functionality for modifying the trie. The original
-// trie remains unchanged until the transaction is committed.
+// Txn starts a copy-on-write transaction.
 //
-// A trie must not be modified directly while a transaction is open, and
-// transactions on the same trie are not safe for concurrent use.
-func (tr *Trie) Txn() *Txn {
-	var tx Txn
-	tx.newTr = &Trie{
+// At most one transaction may be open in the snapshot family. Calling Txn
+// again on this trie, on a sibling snapshot, on the working copy, or via
+// NewTrie returns ErrTxnOpen until Commit or Abort.
+//
+// While the transaction is open, every trie in the family is read-only
+// except the working copy. After Commit or Abort the family may be written
+// again and may start a new transaction. Distinct New() tries have separate
+// families and may each have their own transaction.
+func (tr *Trie) Txn() (*Txn, error) {
+	if tr.family == nil {
+		tr.family = &txnFamily{}
+	}
+	if tr.family.open {
+		return nil, ErrTxnOpen
+	}
+
+	newTr := &Trie{
 		root:     tr.root,
 		size:     tr.size,
 		onInsert: tr.onInsert,
 		onUpdate: tr.onUpdate,
+		txn:      txnWork,
+		family:   tr.family,
 	}
 	if tr.root != nil {
-		tx.newTr.root.markCow()
+		newTr.root.markCow()
 	}
 
-	tx.oldTr = tr
-	return &tx
+	tr.family.open = true
+	tr.txn = txnOrigin
+	return &Txn{oldTr: tr, newTr: newTr}, nil
 }
 
+// OldTrie returns the origin trie. While the transaction is open it is read-only.
 func (tx *Txn) OldTrie() *Trie {
 	return tx.oldTr
 }
 
-func (tx *Txn) NewTrie() *Trie {
-	return tx.newTr
+// NewTrie returns the working copy holding modifications made so far.
+// It returns ErrTxnFinished after Commit or Abort.
+// The returned trie cannot start a nested transaction.
+func (tx *Txn) NewTrie() (*Trie, error) {
+	return tx.trie()
 }
 
-// Commit finalizes the transaction by setting the old trie to the new trie
-// and clearing the new trie reference. Returns the committed trie.
+func (tx *Txn) trie() (*Trie, error) {
+	if tx.newTr == nil {
+		return nil, ErrTxnFinished
+	}
+	return tx.newTr, nil
+}
+
+func (tx *Txn) end() {
+	if tx.newTr == nil {
+		return
+	}
+	tx.oldTr.txn = txnIdle
+	tx.newTr.txn = txnIdle
+	if tx.oldTr.family != nil {
+		tx.oldTr.family.open = false
+	}
+}
+
+// Commit applies the transaction and returns the committed trie.
+// Calling Commit again returns the same trie.
 func (tx *Txn) Commit() *Trie {
-	tx.oldTr = tx.newTr
-	tx.newTr = nil
+	if tx.newTr != nil {
+		tx.end()
+		tx.oldTr = tx.newTr
+		tx.newTr = nil
+	}
 	return tx.oldTr
 }
 
-// Abort cancels the transaction and returns the original trie state.
-// Any changes made during the transaction will be discarded.
+// Abort discards the transaction and returns the origin trie.
 func (tx *Txn) Abort() *Trie {
+	tx.end()
 	tx.newTr = nil
 	return tx.oldTr
 }
 
-// Get retrieves a value associated with the given key from the transaction.
-// It returns the value and a boolean indicating whether the key was found.
-func (tx *Txn) Get(key []byte) (val any, found bool) {
-	return tx.newTr.Get(key)
+// Get retrieves a value from the transaction's working copy.
+func (tx *Txn) Get(key []byte) (val any, found bool, err error) {
+	tr, err := tx.trie()
+	if err != nil {
+		return nil, false, err
+	}
+	return tr.Get(key)
 }
 
-// Upsert inserts a new key-value pair or updates an existing one in the transaction.
-// It returns the old value if the key existed (update case) and a boolean indicating
-// whether it was an update operation. For new insertions, it returns nil and false.
-// The key must not be nil.
-func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
-	must(key)
-
-	if tx.newTr.root == nil {
-		tx.newTr.root = &leafNode{key: key, value: tx.newTr.onInsert(value), cow: false}
-		tx.newTr.size++
-		return nil, false
+// Upsert inserts or updates a key-value pair in the transaction's working copy.
+func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool, err error) {
+	tr, err := tx.trie()
+	if err != nil {
+		return nil, false, err
 	}
-
-	leaf := tx.newTr.findMatch(key, false)
-	index, exactMatch := nibbleIndex(key, leaf.key)
-	if exactMatch {
-		oldVal = leaf.value
-	}
-	ptr, growBranch := tx.findInsert(key, index, exactMatch)
-	if exactMatch {
-		lf := (*ptr).(*leafNode)
-		lf.value = tx.newTr.onUpdate(value, oldVal)
-		return oldVal, true
-	}
-
-	newLeaf := &leafNode{key: key, value: tx.newTr.onInsert(value), cow: false}
-	if growBranch {
-		bn := (*ptr).(*branchNode)
-		bn.growTwigs(index, key, newLeaf)
-	} else {
-		bn := newBranchNode(*ptr, index, leaf.key, key, newLeaf)
-		*ptr = bn
-	}
-
-	tx.newTr.size++
-	return nil, false
+	return tr.Upsert(key, value)
 }
 
-func (tx *Txn) findInsert(key []byte, index nibbleIndexT, exactMatch bool) (ptr *trieNode, growBranch bool) {
-	ptr = &tx.newTr.root
-	for {
-		switch n := (*ptr).(type) {
-		case *leafNode:
-			if n.cowMarked() {
-				n.clearCow()
-				newLf := n.dup()
-				*ptr = newLf
-			}
-			return ptr, false
-		case *branchNode:
-			if n.cowMarked() {
-				n.markTwigs()
-				n.clearCow()
-				newBn := n.dup()
-				*ptr = newBn
-				n = newBn.(*branchNode)
-			}
-			if !exactMatch {
-				if index == n.index {
-					return ptr, true
-				}
-				if index < n.index {
-					return ptr, false
-				}
-			}
-
-			i := 0
-			b := n.twigBit(key)
-			if n.hasTwig(b) {
-				i = n.twigOffset(b)
-			}
-			ptr = n.twig(i)
-		}
+// Delete removes a key from the transaction's working copy.
+func (tx *Txn) Delete(key []byte) (oldVal any, found bool, err error) {
+	tr, err := tx.trie()
+	if err != nil {
+		return nil, false, err
 	}
-}
-
-func (tx *Txn) findDelete(key []byte) (parentBn *trieNode, leaf *leafNode, b bitmapT) {
-	ptr := &tx.newTr.root
-	for {
-		switch n := (*ptr).(type) {
-		case *leafNode:
-			if n.cowMarked() {
-				n.clearCow()
-				newLf := n.dup()
-				*ptr = newLf
-			}
-			return parentBn, n, b
-		case *branchNode:
-			if n.cowMarked() {
-				n.markTwigs()
-				n.clearCow()
-				newBn := n.dup()
-				*ptr = newBn
-				n = newBn.(*branchNode)
-			}
-			b = n.twigBit(key)
-			if !n.hasTwig(b) {
-				return nil, nil, 0
-			}
-			i := n.twigOffset(b)
-			parentBn = ptr
-			ptr = n.twig(i)
-		}
-	}
-}
-
-// Delete removes the entry for the given key from the transaction.
-// It returns the old value and true if the key was present, or nil and false if not found.
-// The key must not be nil.
-func (tx *Txn) Delete(key []byte) (oldVal any, found bool) {
-	must(key)
-
-	if tx.newTr.root == nil {
-		return nil, false
-	}
-
-	parentBn, leaf, b := tx.findDelete(key)
-	if leaf == nil || !bytes.Equal(key, leaf.key) {
-		return nil, false
-	}
-	tx.newTr.size--
-	if parentBn == nil {
-		tx.newTr.root = nil
-		return leaf.value, true
-	}
-
-	bn := (*parentBn).(*branchNode)
-	if bn.twigOffsetMax() == 2 {
-		other := 0
-		if bn.twigOffset(b) == 0 {
-			other = 1
-		}
-		otherTwig := bn.twig(other)
-		*parentBn = *otherTwig
-		return leaf.value, true
-	}
-
-	bn.removeTwig(b)
-	return leaf.value, true
+	return tr.Delete(key)
 }

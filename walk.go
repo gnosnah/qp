@@ -1,5 +1,7 @@
 package qp
 
+import "bytes"
+
 type WalkFn = func(key []byte, val any) (add bool)
 
 var defaultWalkFn = func(key []byte, val any) (add bool) {
@@ -12,9 +14,13 @@ type KVPair struct {
 	Value any
 }
 
-// Walk traverses the entire trie and applies the given function to each element's key
-// and value. If the function returns true, the corresponding key-value pair is included in the result.
+// Walk traverses the trie in lexicographical order and applies f to each pair.
+// If f returns true, the pair is copied into the result.
+// At most max pairs are returned; max <= 0 yields a nil result.
 func (tr *Trie) Walk(max int, f WalkFn) (pairs []KVPair) {
+	if max <= 0 {
+		return nil
+	}
 	if f == nil {
 		f = defaultWalkFn
 	}
@@ -25,7 +31,7 @@ func (tr *Trie) Walk(max int, f WalkFn) (pairs []KVPair) {
 			break
 		}
 		if add := f(k, v); add {
-			pairs = append(pairs, KVPair{Key: k, Value: v})
+			pairs = append(pairs, KVPair{Key: bytes.Clone(k), Value: v})
 		}
 	}
 	return

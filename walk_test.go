@@ -91,7 +91,7 @@ func Test_Walk(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tr := New()
 			for _, d := range tt.data {
-				tr.Upsert([]byte(d.Key), d.Value)
+				upsert(t, tr, []byte(d.Key), d.Value)
 			}
 
 			result := tr.Walk(tt.max, tt.f)

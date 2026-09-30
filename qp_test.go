@@ -20,12 +20,12 @@ func Test_OnInsert(t *testing.T) {
 	for i := 1; i < 10; i++ {
 		key := fmt.Sprintf("%d", i)
 		val := i
-		tr.Upsert([]byte(string(key)), val)
+		upsert(t, tr, []byte(string(key)), val)
 	}
 
 	for i := 1; i < 10; i++ {
 		key := fmt.Sprintf("%d", i)
-		val, found := tr.Get([]byte(string(key)))
+		val, found := get(t, tr, []byte(string(key)))
 		if !found {
 			t.Fatalf("%s not exist", key)
 		}
@@ -46,19 +46,19 @@ func Test_OnUpdate(t *testing.T) {
 	for i := 1; i < 10; i++ {
 		key := fmt.Sprintf("%d", i)
 		val := i
-		tr.Upsert([]byte(string(key)), val)
+		upsert(t, tr, []byte(string(key)), val)
 	}
 
 	// update
 	for i := 1; i < 10; i++ {
 		key := fmt.Sprintf("%d", i)
 		val := i
-		tr.Upsert([]byte(string(key)), val)
+		upsert(t, tr, []byte(string(key)), val)
 	}
 
 	for i := 1; i < 10; i++ {
 		key := fmt.Sprintf("%d", i)
-		val, found := tr.Get([]byte(string(key)))
+		val, found := get(t, tr, []byte(string(key)))
 		if !found {
 			t.Fatalf("%s not exist", key)
 		}
@@ -73,7 +73,7 @@ func Test_GetEmpty(t *testing.T) {
 	tr := New()
 	data := []string{"a", "b"}
 	for _, d := range data {
-		val, found := tr.Get([]byte(d))
+		val, found := get(t, tr, []byte(d))
 		if found {
 			t.Fatalf("%s should not exist", d)
 		}
@@ -87,11 +87,11 @@ func Test_Get(t *testing.T) {
 	data := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
 	tr := New()
 	for _, d := range data {
-		tr.Upsert([]byte(d), value1)
+		upsert(t, tr, []byte(d), value1)
 	}
 
 	for _, d := range data {
-		v, found := tr.Get([]byte(d))
+		v, found := get(t, tr, []byte(d))
 		if !found {
 			t.Fatalf("%s not exist", d)
 		}
@@ -111,7 +111,7 @@ func Test_Upsert(t *testing.T) {
 
 	tr := New()
 	for _, d := range data {
-		tr.Upsert([]byte(d), value1)
+		upsert(t, tr, []byte(d), value1)
 	}
 
 	if tr.Size() != len(data) {
@@ -120,7 +120,7 @@ func Test_Upsert(t *testing.T) {
 
 	update := []string{"a", "b", "c"}
 	for _, d := range update {
-		oldVal, isUpdate := tr.Upsert([]byte(d), value2)
+		oldVal, isUpdate := upsert(t, tr, []byte(d), value2)
 		if oldVal.(int) != value1 {
 			t.Fatalf("oldVal not match")
 		}
@@ -134,7 +134,7 @@ func Test_Upsert(t *testing.T) {
 
 	insert := []string{"a1", "b1", "c1"}
 	for _, d := range insert {
-		_, isUpdate := tr.Upsert([]byte(d), value2)
+		_, isUpdate := upsert(t, tr, []byte(d), value2)
 		if isUpdate {
 			t.Fatalf("isUpdate not match")
 		}
@@ -144,19 +144,64 @@ func Test_Upsert(t *testing.T) {
 	}
 }
 
+func Test_UpsertCopiesKey(t *testing.T) {
+	tr := New()
+	buf := []byte("key0")
+	upsert(t, tr, buf, value1)
+	buf[3] = '1'
+	upsert(t, tr, buf, value2)
+
+	if tr.Size() != 2 {
+		t.Fatalf("size = %d, want 2", tr.Size())
+	}
+	if v, ok := get(t, tr, []byte("key0")); !ok || v != value1 {
+		t.Fatalf("Get(key0) = (%v, %v), want (%d, true)", v, ok, value1)
+	}
+	if v, ok := get(t, tr, []byte("key1")); !ok || v != value2 {
+		t.Fatalf("Get(key1) = (%v, %v), want (%d, true)", v, ok, value2)
+	}
+}
+
+func Test_RemoveTwigShrinks(t *testing.T) {
+	tr := New()
+	for c := byte('a'); c <= 'p'; c++ {
+		upsert(t, tr, []byte{'x', c}, value1)
+	}
+	for i := 0; i < 1000; i++ {
+		c := byte('a' + i%16)
+		del(t, tr, []byte{'x', c})
+		upsert(t, tr, []byte{'x', c}, value1)
+	}
+	assertTwigLen(t, tr.root)
+}
+
+func assertTwigLen(t *testing.T, n trieNode) {
+	t.Helper()
+	bn, ok := n.(*branchNode)
+	if !ok {
+		return
+	}
+	if got, want := len(bn.twigs), bn.twigOffsetMax(); got != want {
+		t.Fatalf("len(twigs)=%d, popcount(bitmap)=%d", got, want)
+	}
+	for i := 0; i < bn.twigOffsetMax(); i++ {
+		assertTwigLen(t, bn.twigs[i])
+	}
+}
+
 func Test_WordsSetGet(t *testing.T) {
 	data := loadTestData(wordsSortedPath)
 
 	tr := New()
 	for _, key := range data {
-		oldVal, isUpdate := tr.Upsert(key, value1)
+		oldVal, isUpdate := upsert(t, tr, key, value1)
 		if oldVal != nil || isUpdate {
 			t.Fatalf("set key: %s failed", string(key))
 		}
 	}
 
 	for _, key := range data {
-		val, found := tr.Get(key)
+		val, found := get(t, tr, key)
 		if !found {
 			t.Fatalf("key: %s not found", string(key))
 		}
@@ -174,13 +219,37 @@ func Test_DeleteEmpty(t *testing.T) {
 	tr := New()
 	data := []string{"a", "b"}
 	for _, d := range data {
-		oldVal, found := tr.Delete([]byte(d))
+		oldVal, found := del(t, tr, []byte(d))
 		if found {
 			t.Fatalf("%s should not exist", d)
 		}
 		if oldVal != nil {
 			t.Fatalf("%s should be nil", d)
 		}
+	}
+}
+
+func Test_APIErrors(t *testing.T) {
+	tr := New()
+	if _, _, err := tr.Get(nil); err != ErrKeyEmpty {
+		t.Fatalf("Get(nil) err=%v want %v", err, ErrKeyEmpty)
+	}
+	if _, _, err := tr.Upsert([]byte{}, 1); err != ErrKeyEmpty {
+		t.Fatalf("Upsert empty err=%v want %v", err, ErrKeyEmpty)
+	}
+	long := make([]byte, MaxKeyBytes+1)
+	for i := range long {
+		long[i] = 'a'
+	}
+	if _, _, err := tr.Get(long); err != ErrKeyTooLong {
+		t.Fatalf("Get long err=%v want %v", err, ErrKeyTooLong)
+	}
+	okKey := make([]byte, MaxKeyBytes)
+	for i := range okKey {
+		okKey[i] = 'a'
+	}
+	if _, _, err := tr.Upsert(okKey, 1); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -197,7 +266,7 @@ func Test_RandomString(t *testing.T) {
 	start = time.Now()
 	tr := New()
 	for k, v := range kvs {
-		tr.Upsert([]byte(k), []byte(v))
+		upsert(t, tr, []byte(k), []byte(v))
 	}
 	if tr.Size() != len(kvs) {
 		t.Errorf("tr.Size() = %d, want %d", tr.Size(), len(kvs))
@@ -207,9 +276,9 @@ func Test_RandomString(t *testing.T) {
 
 	start = time.Now()
 	for k, v := range kvs {
-		val, ok := tr.Get([]byte(k))
+		val, ok := get(t, tr, []byte(k))
 		if !ok {
-			t.Errorf("tr.Get(%s) should exist", k)
+			t.Errorf("get(t, tr, %s) should exist", k)
 		}
 		if !bytes.Equal(val.([]byte), []byte(v)) {
 			t.Errorf("got: %v, expected: %v", val, v)
@@ -220,9 +289,9 @@ func Test_RandomString(t *testing.T) {
 
 	start = time.Now()
 	for k, v := range kvs {
-		val, ok := tr.Delete([]byte(k))
+		val, ok := del(t, tr, []byte(k))
 		if !ok {
-			t.Errorf("tr.Delete(%s) should exist", k)
+			t.Errorf("del(t, tr, %s) should exist", k)
 		}
 		if !bytes.Equal(val.([]byte), []byte(v)) {
 			t.Errorf("got: %v, expected: %v", val, v)
@@ -287,11 +356,11 @@ func Test_GetLessOrEqual(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tr := New()
 			for _, d := range tt.data {
-				tr.Upsert([]byte(d), value1)
+				upsert(t, tr, []byte(d), value1)
 			}
 			for _, item := range tt.items {
 				leKey := ""
-				k, _, exactMatch := tr.GetLessOrEqual([]byte(item.searchK))
+				k, _, exactMatch := gle(t, tr, []byte(item.searchK))
 				if exactMatch != item.expectedExactMatch {
 					t.Errorf("exactMatch = %v, want %v", exactMatch, item.expectedExactMatch)
 				}
@@ -312,7 +381,7 @@ func Benchmark_Words_Upsert(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		tr := New()
 		for _, w := range words {
-			tr.Upsert(w, w)
+			upsert(b, tr, w, w)
 		}
 	}
 }
@@ -321,12 +390,12 @@ func Benchmark_Words_Get(b *testing.B) {
 	words := loadTestData(wordsPath)
 	tr := New()
 	for _, w := range words {
-		tr.Upsert(w, w)
+		upsert(b, tr, w, w)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, w := range words {
-			val, ok := tr.Get(w)
+			val, ok := get(b, tr, w)
 			if !ok {
 				b.Fatalf("failed to get a value from the tree. key: %v", w)
 			}
@@ -343,7 +412,7 @@ func Benchmark_UUID_Upsert(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		tr := New()
 		for _, id := range uuids {
-			tr.Upsert(id, id)
+			upsert(b, tr, id, id)
 		}
 	}
 }
@@ -352,12 +421,12 @@ func Benchmark_UUID_Get(b *testing.B) {
 	uuids := loadTestData(uuidPath)
 	tr := New()
 	for _, id := range uuids {
-		tr.Upsert(id, id)
+		upsert(b, tr, id, id)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, id := range uuids {
-			val, ok := tr.Get(id)
+			val, ok := get(b, tr, id)
 			if !ok {
 				b.Fatalf("failed to get a value from the tree. key: %v", id)
 			}
@@ -414,7 +483,7 @@ func randString() string {
 	}
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = letterBytes[rand.Intn(len(letterBytes))]
+		b[i] = letterBytes[rd.Intn(len(letterBytes))]
 	}
 	return string(b)
 }

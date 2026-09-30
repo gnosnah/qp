@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func Test_EmptyIter(t *testing.T) {
+	it := New().Iterator()
+	if it == nil {
+		t.Fatal("Iterator() returned nil")
+	}
+	if _, _, ok := it.Next(); ok {
+		t.Fatal("empty iterator yielded a value")
+	}
+}
+
 func Test_SimpleIter(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -47,7 +57,7 @@ func Test_SimpleIter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tr := New()
 			for idx := 0; idx < len(tt.data); idx++ {
-				tr.Upsert([]byte(tt.data[idx]), value1)
+				upsert(t, tr, []byte(tt.data[idx]), value1)
 			}
 
 			var result []string
@@ -82,7 +92,7 @@ func Test_WordsIter(t *testing.T) {
 	words := loadTestData(wordsPath)
 	tr := New()
 	for _, word := range words {
-		tr.Upsert(word, value1)
+		upsert(t, tr, word, value1)
 	}
 
 	if tr.Size() != len(words) {
@@ -108,5 +118,31 @@ func Test_WordsIter(t *testing.T) {
 
 	if idx != len(words) {
 		t.Fatalf("iter counter not match")
+	}
+}
+
+func Test_DeepIter(t *testing.T) {
+	tr := New()
+	base := make([]byte, 300)
+	for i := range base {
+		base[i] = 'a'
+	}
+	for n := 1; n <= 300; n++ {
+		upsert(t, tr, base[:n], n)
+	}
+	got := 0
+	it := tr.Iterator()
+	for {
+		k, v, ok := it.Next()
+		if !ok {
+			break
+		}
+		got++
+		if len(k) != v.(int) {
+			t.Fatalf("key len %d != val %v", len(k), v)
+		}
+	}
+	if got != 300 {
+		t.Fatalf("iterated %d, want 300", got)
 	}
 }

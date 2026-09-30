@@ -14,9 +14,8 @@ func nibbleIndex(key1, key2 []byte) (index nibbleIndexT, match bool) {
 			if (a & 0xf0) == (b & 0xf0) {
 				// a,b upper nibble equals, return lower nibble
 				return 1 + i<<1, false
-			} else {
-				return i << 1, false
 			}
+			return i << 1, false
 		}
 		i++
 	}

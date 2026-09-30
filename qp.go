@@ -2,12 +2,7 @@ package qp
 
 import (
 	"bytes"
-	"fmt"
-	"math"
 )
-
-type bitmapT = uint32      // bitmap type, 17 bits, first bit NO_BYTE
-type nibbleIndexT = uint16 // nibble index type
 
 // OnInsertValFn is a function type that processes a new value before insertion.
 // It takes the new value as input and returns the final value to be used.
@@ -18,16 +13,8 @@ type OnInsertValFn = func(newVal any) (finalVal any)
 // the new and old values and determining the final value to be used.
 type OnUpdateValFn = func(newVal, oldVal any) (finalVal any)
 
-const (
-	nibbleIndexMax = math.MaxUint16
-	maxKeyBytes    = nibbleIndexMax >> 1
-)
-
-var (
-	errKeyEmpty   = fmt.Errorf("empty key")
-	errKeyTooLong = fmt.Errorf("max key length is %d bytes", maxKeyBytes)
-	errInternal   = fmt.Errorf("internal error")
-)
+type bitmapT = uint32      // bitmap type, 17 bits, first bit NO_BYTE
+type nibbleIndexT = uint16 // nibble index type
 
 var (
 	// default newVal is finalVal
@@ -35,25 +22,48 @@ var (
 	defaultOnUpdate = func(newVal, oldVal any) any { return newVal }
 )
 
+// Option configures a Trie at construction time.
 type Option func(*Trie)
 
+// WithOnInsert sets a hook applied to values of newly inserted keys.
 func WithOnInsert(f OnInsertValFn) Option {
 	return func(tr *Trie) {
 		tr.onInsert = f
 	}
 }
 
+// WithOnUpdate sets a hook applied when an existing key is updated.
 func WithOnUpdate(f OnUpdateValFn) Option {
 	return func(tr *Trie) {
 		tr.onUpdate = f
 	}
 }
 
+// Trie is an ordered in-memory map from byte-slice keys to values.
+// It is not safe for concurrent use.
 type Trie struct {
 	root     trieNode
 	size     int
 	onInsert OnInsertValFn
 	onUpdate OnUpdateValFn
+	txn      txnRole
+	family   *txnFamily
+}
+
+// txnRole records whether this trie is idle, the origin of an open
+// transaction, or that transaction's working copy.
+type txnRole uint8
+
+const (
+	txnIdle txnRole = iota
+	txnOrigin
+	txnWork
+)
+
+// txnFamily is shared by a trie and every snapshot committed from it.
+// At most one transaction may be open in a family.
+type txnFamily struct {
+	open bool
 }
 
 // New creates and initializes a new Trie with the given options.
@@ -71,6 +81,7 @@ func New(opts ...Option) *Trie {
 	if tr.onUpdate == nil {
 		tr.onUpdate = defaultOnUpdate
 	}
+	tr.family = &txnFamily{}
 	return &tr
 }
 
@@ -83,52 +94,56 @@ func (tr *Trie) findMatch(key []byte, exactMatch bool) *leafNode {
 	if tr.root == nil {
 		return nil
 	}
-	var bn *branchNode
 	ptr := &tr.root
 	for {
 		switch n := (*ptr).(type) {
 		case *leafNode:
 			return n
 		case *branchNode:
-			bn = n
 			i := 0
-			b := bn.twigBit(key)
-			if bn.hasTwig(b) {
-				i = bn.twigOffset(b)
-			} else {
-				if exactMatch {
-					return nil
-				}
+			b := n.twigBit(key)
+			if n.hasTwig(b) {
+				i = n.twigOffset(b)
+			} else if exactMatch {
+				return nil
 			}
-			ptr = bn.twig(i)
+			ptr = n.twig(i)
 		}
 	}
 }
 
-func (tr *Trie) findInsert(key []byte, index nibbleIndexT) (ptr *trieNode, grow bool) {
+// findInsert walks down to the node the new leaf has to be attached to, or to
+// the leaf already holding key when exactMatch is true. Every node shared with
+// another trie is replaced by a private copy on the way down, so that the
+// caller may modify the returned node in place.
+func (tr *Trie) findInsert(key []byte, index nibbleIndexT, exactMatch bool) (ptr *trieNode, grow bool) {
 	ptr = &tr.root
 	for {
-		switch n := (*ptr).(type) {
+		switch n := uncow(ptr).(type) {
 		case *leafNode:
 			return ptr, false
 		case *branchNode:
-			if index == n.index {
-				return ptr, true
-			}
-			if index < n.index {
-				return ptr, false
+			if !exactMatch {
+				if index == n.index {
+					return ptr, true
+				}
+				if index < n.index {
+					return ptr, false
+				}
 			}
 
 			b := n.twigBit(key)
 			if !n.hasTwig(b) {
 				panic(errInternal)
 			}
-			i := n.twigOffset(b)
-			ptr = n.twig(i)
+			ptr = n.twig(n.twigOffset(b))
 		}
 	}
 }
 
+// findDelete walks down to the leaf key would be stored in, copying every node
+// shared with another trie on the way down. It returns the branch the leaf
+// hangs off and the bit the leaf occupies in that branch.
 func (tr *Trie) findDelete(key []byte) (parentBranch *trieNode, leaf *leafNode, b bitmapT) {
 	if tr.root == nil {
 		return nil, nil, 0
@@ -136,13 +151,13 @@ func (tr *Trie) findDelete(key []byte) (parentBranch *trieNode, leaf *leafNode, 
 
 	ptr := &tr.root
 	for {
-		switch n := (*ptr).(type) {
+		switch n := uncow(ptr).(type) {
 		case *leafNode:
 			return parentBranch, n, b
 		case *branchNode:
 			b = n.twigBit(key)
 			if !n.hasTwig(b) {
-				return nil, nil, 0
+				panic(errInternal)
 			}
 			i := n.twigOffset(b)
 			parentBranch = ptr
@@ -151,40 +166,53 @@ func (tr *Trie) findDelete(key []byte) (parentBranch *trieNode, leaf *leafNode, 
 	}
 }
 
-// Get retrieves the value associated with the given key from the trie.
-// It returns the value and a boolean indicating whether the key was found.
-// If the key is not present in the trie, it returns nil and false.
-func (tr *Trie) Get(key []byte) (val any, found bool) {
-	must(key)
+// Get retrieves the value associated with the given key.
+// If the key is not present, it returns nil, false, nil.
+func (tr *Trie) Get(key []byte) (val any, found bool, err error) {
+	if err = checkKey(key); err != nil {
+		return nil, false, err
+	}
 	leaf := tr.findMatch(key, true)
 	if leaf != nil && bytes.Equal(key, leaf.key) {
-		return leaf.value, true
+		return leaf.value, true, nil
 	}
-	return nil, false
+	return nil, false, nil
 }
 
-// Upsert inserts or updates a key-value pair in the trie.
+// Upsert inserts or updates a key-value pair.
 // If the key already exists, it updates the value and returns the old value with isUpdate=true.
-// If the key does not exist, it inserts the new key-value pair and returns nil with isUpdate=false.
-func (tr *Trie) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
-	must(key)
+// If the key does not exist, it inserts the new pair and returns nil, false, nil.
+//
+// The key is copied; the caller may reuse or modify the slice afterwards.
+func (tr *Trie) Upsert(key []byte, value any) (oldVal any, isUpdate bool, err error) {
+	if err = checkKey(key); err != nil {
+		return nil, false, err
+	}
+	if err = tr.checkWrite(); err != nil {
+		return nil, false, err
+	}
 
 	if tr.root == nil {
-		tr.root = &leafNode{key: key, value: tr.onInsert(value)}
+		tr.root = &leafNode{key: bytes.Clone(key), value: tr.onInsert(value)}
 		tr.size++
-		return nil, false
+		return nil, false, nil
 	}
 
+	// locate a leaf to compute the divergence nibble, then copy the write path
 	leaf := tr.findMatch(key, false)
-	index, match := nibbleIndex(key, leaf.key)
-	if match {
-		preValue := leaf.value
-		leaf.value = tr.onUpdate(value, preValue)
-		return preValue, true
+	index, exactMatch := nibbleIndex(key, leaf.key)
+	if exactMatch {
+		oldVal = leaf.value
 	}
 
-	newLeaf := &leafNode{key: key, value: tr.onInsert(value)}
-	ptr, grow := tr.findInsert(key, index)
+	ptr, grow := tr.findInsert(key, index, exactMatch)
+	if exactMatch {
+		lf := (*ptr).(*leafNode)
+		lf.value = tr.onUpdate(value, oldVal)
+		return oldVal, true, nil
+	}
+
+	newLeaf := &leafNode{key: bytes.Clone(key), value: tr.onInsert(value)}
 	if grow {
 		bn := (*ptr).(*branchNode)
 		bn.growTwigs(index, key, newLeaf)
@@ -194,25 +222,32 @@ func (tr *Trie) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	}
 
 	tr.size++
-	return nil, false
+	return nil, false, nil
 }
 
-// Delete removes the entry for the given key from the trie.
-// It returns the value that was associated with the key and a boolean indicating
-// whether the key was present in the trie.
-// If the key is not found, it returns nil and false.
-func (tr *Trie) Delete(key []byte) (oldVal any, found bool) {
-	must(key)
+// Delete removes the entry for the given key.
+// If the key is not found, it returns nil, false, nil.
+func (tr *Trie) Delete(key []byte) (oldVal any, found bool, err error) {
+	if err = checkKey(key); err != nil {
+		return nil, false, err
+	}
+	if err = tr.checkWrite(); err != nil {
+		return nil, false, err
+	}
+
+	hit := tr.findMatch(key, true)
+	if hit == nil || !bytes.Equal(key, hit.key) {
+		return nil, false, nil
+	}
 
 	parentBn, leaf, b := tr.findDelete(key)
 	if leaf == nil || !bytes.Equal(key, leaf.key) {
-		return nil, false
+		panic(errInternal)
 	}
 	tr.size--
 	if parentBn == nil {
-		// only when root is leafNode
 		tr.root = nil
-		return leaf.value, true
+		return leaf.value, true, nil
 	}
 
 	bn := (*parentBn).(*branchNode)
@@ -221,14 +256,13 @@ func (tr *Trie) Delete(key []byte) (oldVal any, found bool) {
 		if bn.twigOffset(b) == 0 {
 			other = 1
 		}
-		// Move the other twig to the parent branch.
 		otherTwig := bn.twig(other)
 		*parentBn = *otherTwig
-		return leaf.value, true
+		return leaf.value, true, nil
 	}
 
 	bn.removeTwig(b)
-	return leaf.value, true
+	return leaf.value, true, nil
 }
 
 func (tr *Trie) findPrev(index nibbleIndexT, key []byte) (prev *trieNode, cur *trieNode, needCheckCur bool) {
@@ -239,17 +273,16 @@ func (tr *Trie) findPrev(index nibbleIndexT, key []byte) (prev *trieNode, cur *t
 			needCheckCur = true
 			return
 		case *branchNode:
-			bn := (*cur).(*branchNode)
-			if index < bn.index {
+			if index < n.index {
 				needCheckCur = true
 				return
 			}
-			b := bn.twigBit(key)
-			i := bn.twigOffset(b)
+			b := n.twigBit(key)
+			i := n.twigOffset(b)
 			if i > 0 {
-				prev = bn.twig(i - 1)
+				prev = n.twig(i - 1)
 			}
-			if index == bn.index {
+			if index == n.index {
 				return
 			}
 			cur = n.twig(i)
@@ -262,29 +295,28 @@ func (tr *Trie) lastLeaf(node *trieNode) *leafNode {
 	for {
 		switch n := (*ptr).(type) {
 		case *leafNode:
-			leaf := (*ptr).(*leafNode)
-			return leaf
+			return n
 		case *branchNode:
-			bn := (*ptr).(*branchNode)
-			offsetMax := bn.twigOffsetMax()
-			ptr = n.twig(offsetMax - 1)
+			ptr = n.twig(n.twigOffsetMax() - 1)
 		}
 	}
 }
 
-// GetLessOrEqual returns the key-value pair with the largest key that is less than or equal to
-// the given key. It returns the key, value, and a boolean indicating whether an exact match was found.
-// If no such key exists, it returns nil, nil, false.
-func (tr *Trie) GetLessOrEqual(key []byte) (k []byte, v any, exactMatch bool) {
-	must(key)
+// GetLessOrEqual returns the key-value pair with the largest key that is
+// less than or equal to the given key. If no such key exists, it returns
+// nil, nil, false, nil. The returned key must not be modified.
+func (tr *Trie) GetLessOrEqual(key []byte) (k []byte, v any, exactMatch bool, err error) {
+	if err = checkKey(key); err != nil {
+		return nil, nil, false, err
+	}
 
 	if tr.root == nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 
 	leaf := tr.findMatch(key, false)
 	if leaf != nil && bytes.Equal(key, leaf.key) {
-		return key, leaf.value, true
+		return key, leaf.value, true, nil
 	}
 
 	index, match := nibbleIndex(key, leaf.key)
@@ -298,22 +330,26 @@ func (tr *Trie) GetLessOrEqual(key []byte) (k []byte, v any, exactMatch bool) {
 		b2 := nibbleBit(index, leaf.key)
 		if b1 > b2 {
 			leaf = tr.lastLeaf(cur)
-			return leaf.key, leaf.value, false
+			return leaf.key, leaf.value, false, nil
 		}
 	}
 
 	if prev == nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	leaf = tr.lastLeaf(prev)
-	return leaf.key, leaf.value, false
+	return leaf.key, leaf.value, false, nil
 }
 
-func must(key []byte) {
-	if len(key) == 0 {
-		panic(errKeyEmpty)
+func (tr *Trie) checkWrite() error {
+	if tr.txn == txnWork {
+		return nil
 	}
-	if len(key) > maxKeyBytes {
-		panic(errKeyTooLong)
+	if tr.txn == txnOrigin {
+		return ErrTrieFrozen
 	}
+	if tr.family != nil && tr.family.open {
+		return ErrTrieFrozen
+	}
+	return nil
 }
