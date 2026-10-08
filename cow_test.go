@@ -187,6 +187,58 @@ func Test_CowDelete(t *testing.T) {
 	}
 }
 
+func Test_CowRemoveTwigShrinksSlice(t *testing.T) {
+	keys := make([][]byte, 4)
+	for i := range keys {
+		keys[i] = []byte{0x60 + byte(i)}
+	}
+
+	tr := New()
+	for _, key := range keys {
+		tr.Upsert(key, value1)
+	}
+
+	tx := tr.Txn()
+	if _, found := tx.Delete(keys[1]); !found {
+		t.Fatal("Delete not found")
+	}
+
+	oldBn := tx.oldTr.root.(*branchNode)
+	newBn := tx.newTr.root.(*branchNode)
+	if len(oldBn.twigs) != 4 || oldBn.twigOffsetMax() != 4 {
+		t.Fatalf("old twigs len=%d live=%d, want 4", len(oldBn.twigs), oldBn.twigOffsetMax())
+	}
+	assertTwigsTight(t, tx.newTr.root, 3)
+	if &oldBn.twigs[0] == &newBn.twigs[0] {
+		t.Fatal("txn delete mutated the original twigs slice")
+	}
+
+	const cycles = 1000
+	for i := range cycles {
+		tx.Upsert(keys[1], value2)
+		if _, found := tx.Delete(keys[1]); !found {
+			t.Fatalf("cycle %d: Delete not found", i)
+		}
+	}
+	assertTwigsTight(t, tx.newTr.root, 3)
+	if len(oldBn.twigs) != 4 {
+		t.Fatalf("old twigs len=%d after churn, want 4", len(oldBn.twigs))
+	}
+
+	resultOld := tx.oldTr.Walk(math.MaxInt, nil)
+	if len(resultOld) != 4 {
+		t.Fatalf("oldTr.Walk len=%d, want 4", len(resultOld))
+	}
+	if _, found := tx.Get(keys[1]); found {
+		t.Fatal("deleted key still present in txn")
+	}
+	for _, idx := range []int{0, 2, 3} {
+		if _, found := tx.Get(keys[idx]); !found {
+			t.Fatalf("Get(%x) missing", keys[idx])
+		}
+	}
+}
+
 func Test_CowTxnAfterRemoveTwig(t *testing.T) {
 	tr := New()
 	tr.Upsert([]byte("a"), value1)

@@ -170,6 +170,76 @@ func Test_WordsSetGet(t *testing.T) {
 	}
 }
 
+func Test_RemoveTwigShrinksSlice(t *testing.T) {
+	keys := make([][]byte, 4)
+	for i := range keys {
+		keys[i] = []byte{0x60 + byte(i)}
+	}
+
+	tr := New()
+	for _, key := range keys {
+		tr.Upsert(key, value1)
+	}
+	assertTwigsTight(t, tr.root, 4)
+
+	// Delete the first, middle, and last twig. Each removal must shrink the
+	// slice and leave every surviving key readable.
+	for _, idx := range []int{0, 1, 3} {
+		if _, found := tr.Delete(keys[idx]); !found {
+			t.Fatalf("Delete(%x) not found", keys[idx])
+		}
+		assertTwigsTight(t, tr.root, 3)
+		if _, found := tr.Get(keys[idx]); found {
+			t.Fatalf("Get(%x) still present", keys[idx])
+		}
+		for i, key := range keys {
+			if i == idx {
+				continue
+			}
+			if _, found := tr.Get(key); !found {
+				t.Fatalf("Get(%x) missing after Delete(%x)", key, keys[idx])
+			}
+		}
+		tr.Upsert(keys[idx], value1)
+		assertTwigsTight(t, tr.root, 4)
+	}
+
+	const cycles = 1000
+	for i := range cycles {
+		if _, found := tr.Delete(keys[1]); !found {
+			t.Fatalf("cycle %d: Delete not found", i)
+		}
+		tr.Upsert(keys[1], value2)
+	}
+	assertTwigsTight(t, tr.root, 4)
+	if tr.Size() != len(keys) {
+		t.Fatalf("Size = %d, want %d", tr.Size(), len(keys))
+	}
+	val, found := tr.Get(keys[1])
+	if !found || val.(int) != value2 {
+		t.Fatalf("Get(%x) = %v found=%v, want %d true", keys[1], val, found, value2)
+	}
+}
+
+func assertTwigsTight(t *testing.T, n trieNode, wantLen int) {
+	t.Helper()
+	bn, ok := n.(*branchNode)
+	if !ok {
+		t.Fatalf("node is %T, want *branchNode", n)
+	}
+	if len(bn.twigs) != wantLen || bn.twigOffsetMax() != wantLen {
+		t.Fatalf("twigs len=%d live=%d, want %d", len(bn.twigs), bn.twigOffsetMax(), wantLen)
+	}
+	for i, tw := range bn.twigs {
+		if tw == nil {
+			t.Fatalf("nil twig at %d", i)
+		}
+	}
+	if cap(bn.twigs) > len(bn.twigs) && bn.twigs[:cap(bn.twigs)][len(bn.twigs)] != nil {
+		t.Fatal("backing array retains a twig past len")
+	}
+}
+
 func Test_DeleteEmpty(t *testing.T) {
 	tr := New()
 	data := []string{"a", "b"}
