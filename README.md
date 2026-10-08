@@ -88,7 +88,10 @@ go get -u github.com/gnosnah/qp
 	tx.Upsert([]byte("b"), 2)
 	tx.Upsert([]byte("x"), 3)
 	tx.Delete([]byte("a"))
-	tr = tx.Commit() // or  tx.Abort()
+	// Call Commit or Abort once, and keep the returned trie.
+	// Do not use tx after this. Reassigning tr drops the previous trie,
+	// so later Upsert and Delete on tr are safe.
+	tr = tx.Commit() // or tx.Abort()
 	result := tr.Walk(10, nil)
 	for _, d := range result {
 		fmt.Printf("key: %s, value: %v \n", string(d.Key), d.Value)
@@ -99,7 +102,9 @@ go get -u github.com/gnosnah/qp
 Notes:
 
 - Assign the return value: `tr = tx.Commit()` or `tr = tx.Abort()`.
+- `Commit` and `Abort` are mutually exclusive, and each may be called only once. Do not use the `Txn` after either call (`Get`, `Upsert`, `Delete`, `OldTrie`, `NewTrie`). Keep using the returned `*Trie`.
 - Do not modify the trie directly while a transaction is open.
+- A transaction shares unmodified nodes with the original trie, `OldTrie()`, `NewTrie()`, and the trie returned by `Commit` or `Abort`. Those tries may be read together. While any of them is still in use, modify the data only through a new `Txn()`. `Trie.Upsert` and `Trie.Delete` are safe only after every other reference has been dropped.
 - Do not run concurrent transactions on the same trie.
 - Do not start a nested transaction from `tx.NewTrie()`.
 
@@ -183,7 +188,7 @@ Ran some rough performance tests on virtual machine(4c8g), and the results were 
 
 you can find benchmark tool [here](https://github.com/gnosnah/qp-bench)
 
-gomap: golang1.24 builtin map(https://go.dev/blog/swisstable)  
+gomap: golang1.26.6 builtin map
 
 ```bash
 $ cat /proc/cpuinfo
@@ -192,21 +197,19 @@ cpu MHz         : 2249.998
 cache size      : 512 KB
 ...
 
-$ ./bench.sh 3
+❯ ./bench.sh 2
 benchmark iteration 1
+benchmark: gomap
+benchmark: qp
 Title  DataSize  Load(ms)  Insert(ms)  Get(ms)  Alloc(MB)  TotalAlloc(MB)  TotalSys(MB)
-gomap  10000000  1334      7038        1608     1072       1281            1079
-qp     10000000  620       3869        1309     1487       1598            1617
-
+gomap  10000000  1323      7557        5130     641        1281            1095
+qp     10000000  1150      6037        2333     1497       1598            1622
 benchmark iteration 2
+benchmark: gomap
+benchmark: qp
 Title  DataSize  Load(ms)  Insert(ms)  Get(ms)  Alloc(MB)  TotalAlloc(MB)  TotalSys(MB)
-gomap  10000000  619       6278        1897     1079       1281            1087
-qp     10000000  665       3638        1318     1489       1598            1613
-
-benchmark iteration 3
-Title  DataSize  Load(ms)  Insert(ms)  Get(ms)  Alloc(MB)  TotalAlloc(MB)  TotalSys(MB)
-gomap  10000000  646       6116        1692     1052       1281            1059
-qp     10000000  621       3435        1288     1484       1598            1634
+gomap  10000000  1189      7030        4104     649        1281            1103
+qp     10000000  1284      5793        2142     1498       1598            1619
 
 ```
 
