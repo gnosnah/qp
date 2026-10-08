@@ -122,7 +122,10 @@ func (bn *branchNode) growTwigs(index nibbleIndexT, newKey []byte, newLeaf *leaf
 func (bn *branchNode) removeTwig(b bitmapT) {
 	twigOffset := bn.twigOffset(b)
 	copy(bn.twigs[twigOffset:], bn.twigs[twigOffset+1:])
+	// Nil the vacated slot before shrinking so the backing array does not
+	// retain it, then drop the slot so delete/insert cycles stay bounded.
 	bn.twigs[len(bn.twigs)-1] = nil
+	bn.twigs = bn.twigs[:len(bn.twigs)-1]
 	bn.bitmap &= ^b
 }
 
