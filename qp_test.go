@@ -144,6 +144,49 @@ func Test_Upsert(t *testing.T) {
 	}
 }
 
+func Test_UpsertCopiesKey(t *testing.T) {
+	tr := New()
+	buf := []byte("alpha")
+	tr.Upsert(buf, value1)
+
+	stored := tr.root.(*leafNode).key
+	if &stored[0] == &buf[0] {
+		t.Fatal("root leaf aliases the caller buffer")
+	}
+	copy(buf, "brave")
+	tr.Upsert(buf, value2)
+	if aliasesCaller(tr.root, []byte("brave"), buf) {
+		t.Fatal("inserted leaf aliases the caller buffer")
+	}
+	copy(buf, "xxxxx")
+
+	got, found := tr.Get([]byte("alpha"))
+	if !found || got.(int) != value1 {
+		t.Fatalf("Get(alpha) = %v found=%v, want %d true", got, found, value1)
+	}
+	got, found = tr.Get([]byte("brave"))
+	if !found || got.(int) != value2 {
+		t.Fatalf("Get(brave) = %v found=%v, want %d true", got, found, value2)
+	}
+	if _, found = tr.Get([]byte("xxxxx")); found {
+		t.Fatal("mutated buffer became a key")
+	}
+}
+
+func aliasesCaller(n trieNode, key, buf []byte) bool {
+	switch node := n.(type) {
+	case *leafNode:
+		return bytes.Equal(node.key, key) && len(node.key) > 0 && &node.key[0] == &buf[0]
+	case *branchNode:
+		for _, tw := range node.twigs {
+			if tw != nil && aliasesCaller(tw, key, buf) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func Test_WordsSetGet(t *testing.T) {
 	data := loadTestData(wordsSortedPath)
 

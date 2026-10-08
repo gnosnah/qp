@@ -66,7 +66,7 @@ func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	must(key)
 
 	if tx.newTr.root == nil {
-		tx.newTr.root = &leafNode{key: key, value: tx.newTr.onInsert(value), cow: false}
+		tx.newTr.root = newLeafNode(key, tx.newTr.onInsert(value))
 		tx.newTr.size++
 		return nil, false
 	}
@@ -83,7 +83,7 @@ func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 		return oldVal, true
 	}
 
-	newLeaf := &leafNode{key: key, value: tx.newTr.onInsert(value), cow: false}
+	newLeaf := newLeafNode(key, tx.newTr.onInsert(value))
 	if growBranch {
 		bn := (*ptr).(*branchNode)
 		bn.growTwigs(index, key, newLeaf)

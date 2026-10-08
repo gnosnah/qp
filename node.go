@@ -1,6 +1,9 @@
 package qp
 
-import "math/bits"
+import (
+	"bytes"
+	"math/bits"
+)
 
 type trieNode interface {
 	isBranch() bool
@@ -19,6 +22,10 @@ type leafNode struct {
 
 func (*leafNode) isBranch() bool {
 	return false
+}
+
+func newLeafNode(key []byte, value any) *leafNode {
+	return &leafNode{key: bytes.Clone(key), value: value}
 }
 
 func (ln *leafNode) dup() trieNode {

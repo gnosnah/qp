@@ -106,6 +106,34 @@ func Test_CowUpsert(t *testing.T) {
 	}
 }
 
+func Test_CowUpsertCopiesKey(t *testing.T) {
+	buf := []byte("alpha")
+	tx := New().Txn()
+	tx.Upsert(buf, value1)
+	if aliasesCaller(tx.newTr.root, []byte("alpha"), buf) {
+		t.Fatal("txn root leaf aliases the caller buffer")
+	}
+	copy(buf, "brave")
+	tx.Upsert(buf, value2)
+	if aliasesCaller(tx.newTr.root, []byte("brave"), buf) {
+		t.Fatal("txn leaf aliases the caller buffer")
+	}
+	copy(buf, "xxxxx")
+
+	tr := tx.Commit()
+	got, found := tr.Get([]byte("alpha"))
+	if !found || got.(int) != value1 {
+		t.Fatalf("Get(alpha) = %v found=%v, want %d true", got, found, value1)
+	}
+	got, found = tr.Get([]byte("brave"))
+	if !found || got.(int) != value2 {
+		t.Fatalf("Get(brave) = %v found=%v, want %d true", got, found, value2)
+	}
+	if _, found = tr.Get([]byte("xxxxx")); found {
+		t.Fatal("mutated buffer became a key")
+	}
+}
+
 func Test_CowDelete(t *testing.T) {
 	tests := []struct {
 		name        string
