@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"testing"
@@ -349,6 +350,50 @@ func Test_RandomString(t *testing.T) {
 	}
 }
 
+// A nil node can only come from a corrupted trie. Every operation that walks
+// the trie must panic on it; without a default case the walk loops forever.
+func Test_NilNodePanics(t *testing.T) {
+	tests := []struct {
+		name string
+		op   func(tr *Trie)
+	}{
+		{"Get", func(tr *Trie) { tr.Get([]byte("b")) }},
+		{"Upsert", func(tr *Trie) { tr.Upsert([]byte("b"), value2) }},
+		{"Delete", func(tr *Trie) { tr.Delete([]byte("b")) }},
+		{"GetLessOrEqual on the key", func(tr *Trie) { tr.GetLessOrEqual([]byte("b")) }},
+		// "c" is not stored; the walk for its predecessor ends in the nil twig.
+		{"GetLessOrEqual on the next key", func(tr *Trie) { tr.GetLessOrEqual([]byte("c")) }},
+		{"Walk", func(tr *Trie) { tr.Walk(math.MaxInt, nil) }},
+		{"Txn.Upsert", func(tr *Trie) { tr.Txn().Upsert([]byte("b"), value2) }},
+		{"Txn.Delete", func(tr *Trie) { tr.Txn().Delete([]byte("b")) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := New()
+			for _, key := range []string{"a", "b", "d"} {
+				tr.Upsert([]byte(key), value1)
+			}
+			// The root is one branch with three leaves. Drop the leaf of "b".
+			tr.root.(*branchNode).twigs[1] = nil
+
+			panicked := make(chan bool, 1)
+			go func() {
+				defer func() { panicked <- recover() != nil }()
+				tt.op(tr)
+			}()
+			select {
+			case p := <-panicked:
+				if !p {
+					t.Fatal("returned normally on a nil node")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("still running after 5s on a nil node")
+			}
+		})
+	}
+}
+
 func Test_GetLessOrEqual(t *testing.T) {
 	type expects struct {
 		searchK            string
@@ -421,8 +466,8 @@ func Test_GetLessOrEqual(t *testing.T) {
 
 func Benchmark_Words_Upsert(b *testing.B) {
 	words := loadTestData(wordsPath)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		tr := New()
 		for _, w := range words {
 			tr.Upsert(w, w)
@@ -436,8 +481,8 @@ func Benchmark_Words_Get(b *testing.B) {
 	for _, w := range words {
 		tr.Upsert(w, w)
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		for _, w := range words {
 			val, ok := tr.Get(w)
 			if !ok {
@@ -452,8 +497,8 @@ func Benchmark_Words_Get(b *testing.B) {
 
 func Benchmark_UUID_Upsert(b *testing.B) {
 	uuids := loadTestData(uuidPath)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		tr := New()
 		for _, id := range uuids {
 			tr.Upsert(id, id)
@@ -467,8 +512,8 @@ func Benchmark_UUID_Get(b *testing.B) {
 	for _, id := range uuids {
 		tr.Upsert(id, id)
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		for _, id := range uuids {
 			val, ok := tr.Get(id)
 			if !ok {

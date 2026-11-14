@@ -11,8 +11,14 @@ type Txn struct {
 // that provides copy-on-write functionality for modifying the trie. The original
 // trie remains unchanged until the transaction is committed.
 //
-// A trie must not be modified directly while a transaction is open, and
-// transactions on the same trie are not safe for concurrent use.
+// A trie must not be modified directly while a transaction is open. Only one
+// transaction may be open at a time across this trie and every version that
+// shares nodes with it (OldTrie, NewTrie, and tries returned by an earlier
+// Commit or Abort).
+//
+// Other goroutines may keep reading the original trie while the transaction
+// is open. Values are not copied: a stored value is shared by every version
+// that holds its key and must be treated as immutable.
 func (tr *Trie) Txn() *Txn {
 	var tx Txn
 	tx.newTr = &Trie{
@@ -61,7 +67,7 @@ func (tx *Txn) Get(key []byte) (val any, found bool) {
 // Upsert inserts a new key-value pair or updates an existing one in the transaction.
 // It returns the old value if the key existed (update case) and a boolean indicating
 // whether it was an update operation. For new insertions, it returns nil and false.
-// The key must not be nil.
+// The key must not be empty.
 func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	must(key)
 
@@ -96,13 +102,15 @@ func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	return nil, false
 }
 
+// findInsert and findDelete copy every cow-marked node on the way down and
+// continue in the copy. The mark on the original node is left set: that node
+// still belongs to the other versions, so it must never look writable again.
 func (tx *Txn) findInsert(key []byte, index nibbleIndexT, exactMatch bool) (ptr *trieNode, growBranch bool) {
 	ptr = &tx.newTr.root
 	for {
 		switch n := (*ptr).(type) {
 		case *leafNode:
 			if n.cowMarked() {
-				n.clearCow()
 				newLf := n.dup()
 				*ptr = newLf
 			}
@@ -110,7 +118,6 @@ func (tx *Txn) findInsert(key []byte, index nibbleIndexT, exactMatch bool) (ptr 
 		case *branchNode:
 			if n.cowMarked() {
 				n.markTwigs()
-				n.clearCow()
 				newBn := n.dup()
 				*ptr = newBn
 				n = newBn.(*branchNode)
@@ -130,6 +137,8 @@ func (tx *Txn) findInsert(key []byte, index nibbleIndexT, exactMatch bool) (ptr 
 				i = n.twigOffset(b)
 			}
 			ptr = n.twig(i)
+		default:
+			panic(errBadNode)
 		}
 	}
 }
@@ -140,7 +149,6 @@ func (tx *Txn) findDelete(key []byte) (parentBn *trieNode, leaf *leafNode, b bit
 		switch n := (*ptr).(type) {
 		case *leafNode:
 			if n.cowMarked() {
-				n.clearCow()
 				newLf := n.dup()
 				*ptr = newLf
 			}
@@ -148,7 +156,6 @@ func (tx *Txn) findDelete(key []byte) (parentBn *trieNode, leaf *leafNode, b bit
 		case *branchNode:
 			if n.cowMarked() {
 				n.markTwigs()
-				n.clearCow()
 				newBn := n.dup()
 				*ptr = newBn
 				n = newBn.(*branchNode)
@@ -160,13 +167,15 @@ func (tx *Txn) findDelete(key []byte) (parentBn *trieNode, leaf *leafNode, b bit
 			i := n.twigOffset(b)
 			parentBn = ptr
 			ptr = n.twig(i)
+		default:
+			panic(errBadNode)
 		}
 	}
 }
 
 // Delete removes the entry for the given key from the transaction.
 // It returns the old value and true if the key was present, or nil and false if not found.
-// The key must not be nil.
+// The key must not be empty.
 func (tx *Txn) Delete(key []byte) (oldVal any, found bool) {
 	must(key)
 
