@@ -45,7 +45,7 @@ func Test_SimpleIter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tr := New()
+			tr := New[int]()
 			for idx := 0; idx < len(tt.data); idx++ {
 				tr.Upsert([]byte(tt.data[idx]), value1)
 			}
@@ -58,8 +58,8 @@ func Test_SimpleIter(t *testing.T) {
 					break
 				}
 				key := string(k)
-				if v.(int) != value1 {
-					t.Fatalf("key: %s, val %d != %d", key, v.(int), value1)
+				if v != value1 {
+					t.Fatalf("key: %s, val %d != %d", key, v, value1)
 				}
 
 				result = append(result, key)
@@ -80,7 +80,7 @@ func Test_SimpleIter(t *testing.T) {
 
 func Test_WordsIter(t *testing.T) {
 	words := loadTestData(wordsPath)
-	tr := New()
+	tr := New[int]()
 	for _, word := range words {
 		tr.Upsert(word, value1)
 	}

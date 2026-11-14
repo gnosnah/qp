@@ -2,9 +2,9 @@ package qp
 
 const initIterStackSize = 256
 
-type Iterator struct {
-	tr    *Trie
-	stack []*trieNode
+type Iterator[V any] struct {
+	tr    *Trie[V]
+	stack []*trieNode[V]
 	idx   int // stack index
 }
 
@@ -18,10 +18,10 @@ type Iterator struct {
 // Txn.Delete for an iterator over the transaction's NewTrie. Afterwards Next
 // may repeat keys, skip keys, or panic. A transaction does not modify the trie
 // it was started from, so an iterator over that trie stays valid.
-func (tr *Trie) Iterator() *Iterator {
-	var it Iterator
+func (tr *Trie[V]) Iterator() *Iterator[V] {
+	var it Iterator[V]
 	it.tr = tr
-	it.stack = make([]*trieNode, initIterStackSize)
+	it.stack = make([]*trieNode[V], initIterStackSize)
 	it.stack[0] = &tr.root
 	if tr.size > 0 {
 		it.idx = 1
@@ -34,21 +34,23 @@ func (tr *Trie) Iterator() *Iterator {
 }
 
 // Next returns the next key-value pair in the iterator's sequence.
-// If there are no more items to return, ok will be false.
+// If there are no more items to return, ok will be false and value is the
+// zero value of V.
 // The returned key and value should not be modified by the caller.
-func (it *Iterator) Next() (key []byte, value any, ok bool) {
+func (it *Iterator[V]) Next() (key []byte, value V, ok bool) {
 	if it.idx <= 0 {
-		return nil, nil, false
+		var zero V
+		return nil, zero, false
 	}
 	if it.tr.Size() == 1 {
-		leaf := it.tr.root.(*leafNode)
+		leaf := it.tr.root.(*leafNode[V])
 		it.idx = 0
 		return leaf.key, leaf.value, true
 	}
 	return it.nextLeaf()
 }
 
-func (it *Iterator) push(n *trieNode) {
+func (it *Iterator[V]) push(n *trieNode[V]) {
 	if it.idx >= len(it.stack) {
 		it.stack = append(it.stack, nil)
 	}
@@ -56,16 +58,16 @@ func (it *Iterator) push(n *trieNode) {
 	it.idx++
 }
 
-func (it *Iterator) firstLeaf() (key []byte, value any, ok bool) {
+func (it *Iterator[V]) firstLeaf() (key []byte, value V, ok bool) {
 	for {
 		n := it.stack[it.idx-1]
 		switch (*n).(type) {
-		case *branchNode:
-			bn := (*n).(*branchNode)
+		case *branchNode[V]:
+			bn := (*n).(*branchNode[V])
 			nextNode := bn.twig(0)
 			it.push(nextNode)
-		case *leafNode:
-			leaf := (*n).(*leafNode)
+		case *leafNode[V]:
+			leaf := (*n).(*leafNode[V])
 			return leaf.key, leaf.value, true
 		default:
 			panic(errBadNode)
@@ -73,16 +75,16 @@ func (it *Iterator) firstLeaf() (key []byte, value any, ok bool) {
 	}
 }
 
-func (it *Iterator) nextLeaf() (key []byte, value any, ok bool) {
+func (it *Iterator[V]) nextLeaf() (key []byte, value V, ok bool) {
 	n := it.stack[it.idx-1]
 	switch (*n).(type) {
-	case *branchNode:
+	case *branchNode[V]:
 		return it.firstLeaf()
-	case *leafNode:
+	case *leafNode[V]:
 		for ; it.idx >= 2; it.idx-- {
 			n = it.stack[it.idx-1]
 			p := it.stack[it.idx-2]
-			bn := (*p).(*branchNode)
+			bn := (*p).(*branchNode[V])
 			tIdx := bn.twigIdx(*n)
 			if bn.twigTail(tIdx) {
 				continue
@@ -93,5 +95,6 @@ func (it *Iterator) nextLeaf() (key []byte, value any, ok bool) {
 		}
 	}
 	it.idx = 0
-	return nil, nil, false
+	var zero V
+	return nil, zero, false
 }
