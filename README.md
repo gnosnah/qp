@@ -19,10 +19,14 @@ go get -u github.com/gnosnah/qp
 
 ### basic 
 
+`Trie[V]` stores values of one type `V`. Give the type to `New`: `qp.New[int]()`, `qp.New[*Record]()`. With `WithOnInsert` or `WithOnUpdate` it is inferred from the handler.
+
+When a key is not found, the returned value is the zero value of `V` (`nil` for a pointer type, `0` for `int`). Use the returned bool (`found`, `isUpdate`, `ok`) to tell a miss from a stored zero value.
+
 - new/get/upsert/delete/size
 
 ```go
-	tr := qp.New()
+	tr := qp.New[int]()
 
 	keys := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
 	for _, key := range keys {
@@ -45,7 +49,7 @@ go get -u github.com/gnosnah/qp
 - iteration
 
 ```go 
-	tr := qp.New()
+	tr := qp.New[int]()
 	keys := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
 	for _, key := range keys {
 		tr.Upsert([]byte(key), 1)
@@ -64,7 +68,7 @@ go get -u github.com/gnosnah/qp
 - walk
 
 ``` go
-	tr := qp.New()
+	tr := qp.New[int]()
 	keys := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
 	for _, key := range keys {
 		tr.Upsert([]byte(key), 1)
@@ -78,7 +82,7 @@ go get -u github.com/gnosnah/qp
 - transaction
 
 ```go
-	tr := qp.New()
+	tr := qp.New[int]()
 	keys := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
 	for _, key := range keys {
 		tr.Upsert([]byte(key), 1)
@@ -120,8 +124,8 @@ A trie has no internal locking. The supported model is one writer and any number
 - `Trie.Upsert` and `Trie.Delete` modify nodes in place. Once readers exist, change the data only through `Txn()`.
 
 ```go
-	var zone atomic.Pointer[qp.Trie]
-	zone.Store(qp.New())
+	var zone atomic.Pointer[qp.Trie[int]]
+	zone.Store(qp.New[int]())
 
 	// readers, any goroutine
 	tr := zone.Load()
@@ -139,9 +143,8 @@ A trie has no internal locking. The supported model is one writer and any number
 - onInsert
 
 ```go
-	onInsert := func(newVal any) (finalVal any) {
-		v := newVal.(int)
-		return v * 10 // return newVal * 10
+	onInsert := func(newVal int) (finalVal int) {
+		return newVal * 10
 	}
 	tr := qp.New(qp.WithOnInsert(onInsert))	
 	for i := 1; i < 10; i++ {
@@ -160,9 +163,8 @@ A trie has no internal locking. The supported model is one writer and any number
 - onUpdate
 
 ```go
-	onUpdate := func(newVal, oldVal any) (finalVal any) {
-		v := newVal.(int)
-		return v + oldVal.(int) // return newVal + oldVal
+	onUpdate := func(newVal, oldVal int) (finalVal int) {
+		return newVal + oldVal
 	}
 	tr := qp.New(qp.WithOnUpdate(onUpdate))	
 	for i := 1; i < 10; i++ {
@@ -187,8 +189,8 @@ A trie has no internal locking. The supported model is one writer and any number
 - walk filter
 
 ```go
-	tr := qp.New()
-	kvs := []qp.KVPair{
+	tr := qp.New[int]()
+	kvs := []qp.KVPair[int]{
 		{Key: []byte("a"), Value: 1},
 		{Key: []byte("ab"), Value: 2},
 		{Key: []byte("b"), Value: 2},
@@ -200,9 +202,8 @@ A trie has no internal locking. The supported model is one writer and any number
 	// Return up to 10 pairs.
 	max := 10
 	// only reuturn key with 'a' prefix and value > 2
-	f := func(key []byte, val any) bool { 
-		v := val.(int)
-		return bytes.HasPrefix(key, []byte("a")) && v >= 2
+	f := func(key []byte, val int) bool {
+		return bytes.HasPrefix(key, []byte("a")) && val >= 2
 	}
 	result := tr.Walk(max, f)
 	fmt.Printf("result: %v \n", result)
@@ -243,7 +244,7 @@ qp     10000000  1284      5793        2142     1498       1598            1619
 ## Limits
 
 - The key must not be empty (nil or zero length) and must not exceed 32767 bytes. `Get`, `Upsert`, and `Delete` (on both `Trie` and `Txn`) and `GetLessOrEqual` panic on such a key.
-- Create a trie with `qp.New()`. The zero value `qp.Trie{}` is not usable.
+- Create a trie with `qp.New`. The zero value `qp.Trie[V]{}` is not usable.
 - An iterator is valid only while its trie is not modified. `Trie.Upsert` and `Trie.Delete` on that trie invalidate it, and so do `Txn.Upsert` and `Txn.Delete` for an iterator over `tx.NewTrie()`. Afterwards `Next` may repeat keys, skip keys, or panic. A transaction does not modify the trie it was started from, so an iterator over that trie stays valid.
 - `onInsert` and `onUpdate` handlers and the `Walk` filter must not modify the trie or transaction that calls them.
 

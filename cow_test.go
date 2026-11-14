@@ -12,41 +12,41 @@ import (
 
 type updateItem struct {
 	key            []byte
-	val            any
-	expectOldVal   any
+	val            int
+	expectOldVal   int
 	expectIsUpdate bool
 }
 
 type deleteItem struct {
 	key          []byte
-	expectOldVal any
+	expectOldVal int
 	expectFound  bool
 }
 
 func Test_CowUpsert(t *testing.T) {
 	tests := []struct {
 		name        string
-		oldTr       []KVPair
+		oldTr       []KVPair[int]
 		updates     []updateItem
-		expectOldTr []KVPair
-		expectNewTr []KVPair
+		expectOldTr []KVPair[int]
+		expectNewTr []KVPair[int]
 	}{
 		{
 			name:  "Empty cow",
-			oldTr: []KVPair{},
+			oldTr: []KVPair[int]{},
 			updates: []updateItem{
-				{[]byte("a"), value1, nil, false},
-				{[]byte("b"), value1, nil, false},
+				{[]byte("a"), value1, 0, false},
+				{[]byte("b"), value1, 0, false},
 			},
 			expectOldTr: nil,
-			expectNewTr: []KVPair{
+			expectNewTr: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("b"), value1},
 			},
 		},
 		{
 			name: "Simple cow",
-			oldTr: []KVPair{
+			oldTr: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("b"), value1},
 				{[]byte("c"), value1},
@@ -55,15 +55,15 @@ func Test_CowUpsert(t *testing.T) {
 			updates: []updateItem{
 				{[]byte("b"), value2, value1, true},
 				{[]byte("c"), value2, value1, true},
-				{[]byte("e"), value2, nil, false},
+				{[]byte("e"), value2, 0, false},
 			},
-			expectOldTr: []KVPair{
+			expectOldTr: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("b"), value1},
 				{[]byte("c"), value1},
 				{[]byte("d"), value1},
 			},
-			expectNewTr: []KVPair{
+			expectNewTr: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("b"), value2},
 				{[]byte("c"), value2},
@@ -75,7 +75,7 @@ func Test_CowUpsert(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tr := New()
+			tr := New[int]()
 			for _, kv := range tt.oldTr {
 				tr.Upsert(kv.Key, kv.Value)
 			}
@@ -112,7 +112,7 @@ func Test_CowUpsert(t *testing.T) {
 
 func Test_CowUpsertCopiesKey(t *testing.T) {
 	buf := []byte("alpha")
-	tx := New().Txn()
+	tx := New[int]().Txn()
 	tx.Upsert(buf, value1)
 	if aliasesCaller(tx.newTr.root, []byte("alpha"), buf) {
 		t.Fatal("txn root leaf aliases the caller buffer")
@@ -126,11 +126,11 @@ func Test_CowUpsertCopiesKey(t *testing.T) {
 
 	tr := tx.Commit()
 	got, found := tr.Get([]byte("alpha"))
-	if !found || got.(int) != value1 {
+	if !found || got != value1 {
 		t.Fatalf("Get(alpha) = %v found=%v, want %d true", got, found, value1)
 	}
 	got, found = tr.Get([]byte("brave"))
-	if !found || got.(int) != value2 {
+	if !found || got != value2 {
 		t.Fatalf("Get(brave) = %v found=%v, want %d true", got, found, value2)
 	}
 	if _, found = tr.Get([]byte("xxxxx")); found {
@@ -141,24 +141,24 @@ func Test_CowUpsertCopiesKey(t *testing.T) {
 func Test_CowDelete(t *testing.T) {
 	tests := []struct {
 		name        string
-		oldTr       []KVPair
+		oldTr       []KVPair[int]
 		deletes     []deleteItem
-		expectOldTr []KVPair
-		expectNewTr []KVPair
+		expectOldTr []KVPair[int]
+		expectNewTr []KVPair[int]
 	}{
 		{
 			name:  "Empty cow",
-			oldTr: []KVPair{},
+			oldTr: []KVPair[int]{},
 			deletes: []deleteItem{
-				{[]byte("a"), nil, false},
-				{[]byte("b"), nil, false},
+				{[]byte("a"), 0, false},
+				{[]byte("b"), 0, false},
 			},
 			expectOldTr: nil,
 			expectNewTr: nil,
 		},
 		{
 			name: "Simple cow",
-			oldTr: []KVPair{
+			oldTr: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("b"), value1},
 				{[]byte("c"), value1},
@@ -167,15 +167,15 @@ func Test_CowDelete(t *testing.T) {
 			deletes: []deleteItem{
 				{[]byte("b"), value1, true},
 				{[]byte("c"), value1, true},
-				{[]byte("e"), nil, false},
+				{[]byte("e"), 0, false},
 			},
-			expectOldTr: []KVPair{
+			expectOldTr: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("b"), value1},
 				{[]byte("c"), value1},
 				{[]byte("d"), value1},
 			},
-			expectNewTr: []KVPair{
+			expectNewTr: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("d"), value1},
 			},
@@ -184,7 +184,7 @@ func Test_CowDelete(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tr := New()
+			tr := New[int]()
 			for _, kv := range tt.oldTr {
 				tr.Upsert(kv.Key, kv.Value)
 			}
@@ -225,7 +225,7 @@ func Test_CowRemoveTwigShrinksSlice(t *testing.T) {
 		keys[i] = []byte{0x60 + byte(i)}
 	}
 
-	tr := New()
+	tr := New[int]()
 	for _, key := range keys {
 		tr.Upsert(key, value1)
 	}
@@ -235,8 +235,8 @@ func Test_CowRemoveTwigShrinksSlice(t *testing.T) {
 		t.Fatal("Delete not found")
 	}
 
-	oldBn := tx.oldTr.root.(*branchNode)
-	newBn := tx.newTr.root.(*branchNode)
+	oldBn := tx.oldTr.root.(*branchNode[int])
+	newBn := tx.newTr.root.(*branchNode[int])
 	if len(oldBn.twigs) != 4 || oldBn.twigOffsetMax() != 4 {
 		t.Fatalf("old twigs len=%d live=%d, want 4", len(oldBn.twigs), oldBn.twigOffsetMax())
 	}
@@ -272,7 +272,7 @@ func Test_CowRemoveTwigShrinksSlice(t *testing.T) {
 }
 
 func Test_CowTxnAfterRemoveTwig(t *testing.T) {
-	tr := New()
+	tr := New[int]()
 	tr.Upsert([]byte("a"), value1)
 	tr.Upsert([]byte("b"), value2)
 	tr.Upsert([]byte("c"), value1)
@@ -284,7 +284,7 @@ func Test_CowTxnAfterRemoveTwig(t *testing.T) {
 	tr = tx.Commit()
 
 	result := tr.Walk(math.MaxInt, nil)
-	expect := []KVPair{
+	expect := []KVPair[int]{
 		{[]byte("a"), value1},
 		{[]byte("c"), value1},
 		{[]byte("d"), value2},
@@ -298,14 +298,14 @@ func Test_CowTxnAfterRemoveTwig(t *testing.T) {
 	tr = tx2.Commit()
 
 	result = tr.Walk(math.MaxInt, nil)
-	expect = append(expect, KVPair{[]byte("e"), value1})
+	expect = append(expect, KVPair[int]{[]byte("e"), value1})
 	if !reflect.DeepEqual(result, expect) {
 		t.Errorf("Walk after second txn got %v want %v", result, expect)
 	}
 }
 
 func Test_CowCommitDeleteThenNewTxn(t *testing.T) {
-	tr := New()
+	tr := New[int]()
 	tr.Upsert([]byte("a"), value1)
 	tr.Upsert([]byte("b"), value2)
 	tr.Upsert([]byte("c"), value1)
@@ -319,7 +319,7 @@ func Test_CowCommitDeleteThenNewTxn(t *testing.T) {
 	tr = tx2.Abort()
 
 	result := tr.Walk(math.MaxInt, nil)
-	expect := []KVPair{
+	expect := []KVPair[int]{
 		{[]byte("a"), value1},
 		{[]byte("c"), value1},
 	}
@@ -329,7 +329,7 @@ func Test_CowCommitDeleteThenNewTxn(t *testing.T) {
 }
 
 func Test_CowGrowTwigs(t *testing.T) {
-	tr := New()
+	tr := New[int]()
 	tr.Upsert([]byte("ab"), value1)
 	tr.Upsert([]byte("ac"), value2)
 
@@ -337,7 +337,7 @@ func Test_CowGrowTwigs(t *testing.T) {
 	tx.Upsert([]byte("ad"), value1)
 
 	resultNew := tx.newTr.Walk(math.MaxInt, nil)
-	expectNew := []KVPair{
+	expectNew := []KVPair[int]{
 		{[]byte("ab"), value1},
 		{[]byte("ac"), value2},
 		{[]byte("ad"), value1},
@@ -347,7 +347,7 @@ func Test_CowGrowTwigs(t *testing.T) {
 	}
 
 	resultOld := tx.oldTr.Walk(math.MaxInt, nil)
-	expectOld := []KVPair{
+	expectOld := []KVPair[int]{
 		{[]byte("ab"), value1},
 		{[]byte("ac"), value2},
 	}
@@ -357,7 +357,7 @@ func Test_CowGrowTwigs(t *testing.T) {
 }
 
 func Test_CowDeleteCollapse(t *testing.T) {
-	tr := New()
+	tr := New[int]()
 	tr.Upsert([]byte("a"), value1)
 	tr.Upsert([]byte("b"), value2)
 
@@ -368,13 +368,13 @@ func Test_CowDeleteCollapse(t *testing.T) {
 	}
 
 	resultNew := tx.newTr.Walk(math.MaxInt, nil)
-	expectNew := []KVPair{{[]byte("b"), value2}}
+	expectNew := []KVPair[int]{{[]byte("b"), value2}}
 	if !reflect.DeepEqual(resultNew, expectNew) {
 		t.Errorf("newTr.Walk got %v want %v", resultNew, expectNew)
 	}
 
 	resultOld := tx.oldTr.Walk(math.MaxInt, nil)
-	expectOld := []KVPair{
+	expectOld := []KVPair[int]{
 		{[]byte("a"), value1},
 		{[]byte("b"), value2},
 	}
@@ -390,7 +390,7 @@ func Test_CowDeleteCollapse(t *testing.T) {
 }
 
 func Test_CowDeleteThenUpsertInTxn(t *testing.T) {
-	tr := New()
+	tr := New[int]()
 	tr.Upsert([]byte("a"), value1)
 	tr.Upsert([]byte("b"), value2)
 	tr.Upsert([]byte("c"), value1)
@@ -402,7 +402,7 @@ func Test_CowDeleteThenUpsertInTxn(t *testing.T) {
 	tx.Upsert([]byte("d"), value2)
 
 	resultNew := tx.newTr.Walk(math.MaxInt, nil)
-	expectNew := []KVPair{
+	expectNew := []KVPair[int]{
 		{[]byte("a"), value1},
 		{[]byte("c"), value1},
 		{[]byte("d"), value2},
@@ -412,7 +412,7 @@ func Test_CowDeleteThenUpsertInTxn(t *testing.T) {
 	}
 
 	resultOld := tx.oldTr.Walk(math.MaxInt, nil)
-	expectOld := []KVPair{
+	expectOld := []KVPair[int]{
 		{[]byte("a"), value1},
 		{[]byte("b"), value2},
 		{[]byte("c"), value1},
@@ -423,8 +423,8 @@ func Test_CowDeleteThenUpsertInTxn(t *testing.T) {
 }
 
 func Test_CowOnInsert(t *testing.T) {
-	onInsert := func(newVal any) any {
-		return newVal.(int) * 10
+	onInsert := func(newVal int) int {
+		return newVal * 10
 	}
 	tr := New(WithOnInsert(onInsert))
 
@@ -432,37 +432,37 @@ func Test_CowOnInsert(t *testing.T) {
 	tx.Upsert([]byte("a"), 5)
 
 	val, found := tx.Get([]byte("a"))
-	if !found || val.(int) != 50 {
+	if !found || val != 50 {
 		t.Errorf("Get(a) got %v found=%v want 50 true", val, found)
 	}
 
 	tr = tx.Commit()
 	val, found = tr.Get([]byte("a"))
-	if !found || val.(int) != 50 {
+	if !found || val != 50 {
 		t.Errorf("after commit Get(a) got %v found=%v want 50 true", val, found)
 	}
 }
 
 func Test_CowOnUpdate(t *testing.T) {
-	onUpdate := func(newVal, oldVal any) any {
-		return newVal.(int) + oldVal.(int)
+	onUpdate := func(newVal, oldVal int) int {
+		return newVal + oldVal
 	}
 	tr := New(WithOnUpdate(onUpdate))
 	tr.Upsert([]byte("a"), 1)
 
 	tx := tr.Txn()
 	oldVal, isUpdate := tx.Upsert([]byte("a"), 2)
-	if !isUpdate || oldVal.(int) != 1 {
+	if !isUpdate || oldVal != 1 {
 		t.Fatalf("Upsert(a) got oldVal=%v isUpdate=%v want 1 true", oldVal, isUpdate)
 	}
 
 	val, found := tx.Get([]byte("a"))
-	if !found || val.(int) != 3 {
+	if !found || val != 3 {
 		t.Errorf("Get(a) got %v found=%v want 3 true", val, found)
 	}
 
 	resultOld := tx.oldTr.Walk(math.MaxInt, nil)
-	expectOld := []KVPair{{[]byte("a"), 1}}
+	expectOld := []KVPair[int]{{[]byte("a"), 1}}
 	if !reflect.DeepEqual(resultOld, expectOld) {
 		t.Errorf("oldTr.Walk got %v want %v", resultOld, expectOld)
 	}
@@ -471,29 +471,29 @@ func Test_CowOnUpdate(t *testing.T) {
 func Test_CowCommit(t *testing.T) {
 	tests := []struct {
 		name    string
-		oldTr   []KVPair
+		oldTr   []KVPair[int]
 		updates []updateItem
 		deletes []deleteItem
-		expectR []KVPair
+		expectR []KVPair[int]
 	}{
 		{
 			name:  "Empty cow",
-			oldTr: []KVPair{},
+			oldTr: []KVPair[int]{},
 			updates: []updateItem{
-				{[]byte("a"), value1, nil, false},
-				{[]byte("b"), value1, nil, false},
+				{[]byte("a"), value1, 0, false},
+				{[]byte("b"), value1, 0, false},
 			},
 			deletes: []deleteItem{
 				{[]byte("b"), value1, true},
-				{[]byte("c"), nil, false},
+				{[]byte("c"), 0, false},
 			},
-			expectR: []KVPair{
+			expectR: []KVPair[int]{
 				{[]byte("a"), value1},
 			},
 		},
 		{
 			name: "Simple cow",
-			oldTr: []KVPair{
+			oldTr: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("b"), value1},
 				{[]byte("c"), value1},
@@ -506,9 +506,9 @@ func Test_CowCommit(t *testing.T) {
 			deletes: []deleteItem{
 				{[]byte("b"), value2, true},
 				{[]byte("c"), value1, true},
-				{[]byte("e"), nil, false},
+				{[]byte("e"), 0, false},
 			},
-			expectR: []KVPair{
+			expectR: []KVPair[int]{
 				{[]byte("a"), value2},
 				{[]byte("d"), value1},
 			},
@@ -517,7 +517,7 @@ func Test_CowCommit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tr := New()
+			tr := New[int]()
 			for _, kv := range tt.oldTr {
 				tr.Upsert(kv.Key, kv.Value)
 			}
@@ -558,27 +558,27 @@ func Test_CowCommit(t *testing.T) {
 func Test_CowAbort(t *testing.T) {
 	tests := []struct {
 		name    string
-		oldTr   []KVPair
+		oldTr   []KVPair[int]
 		updates []updateItem
 		deletes []deleteItem
-		expectR []KVPair
+		expectR []KVPair[int]
 	}{
 		{
 			name:  "Empty cow",
-			oldTr: []KVPair{},
+			oldTr: []KVPair[int]{},
 			updates: []updateItem{
-				{[]byte("a"), value1, nil, false},
-				{[]byte("b"), value1, nil, false},
+				{[]byte("a"), value1, 0, false},
+				{[]byte("b"), value1, 0, false},
 			},
 			deletes: []deleteItem{
 				{[]byte("b"), value1, true},
-				{[]byte("c"), nil, false},
+				{[]byte("c"), 0, false},
 			},
 			expectR: nil,
 		},
 		{
 			name: "Simple cow",
-			oldTr: []KVPair{
+			oldTr: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("b"), value1},
 				{[]byte("c"), value1},
@@ -591,9 +591,9 @@ func Test_CowAbort(t *testing.T) {
 			deletes: []deleteItem{
 				{[]byte("b"), value2, true},
 				{[]byte("c"), value1, true},
-				{[]byte("e"), nil, false},
+				{[]byte("e"), 0, false},
 			},
-			expectR: []KVPair{
+			expectR: []KVPair[int]{
 				{[]byte("a"), value1},
 				{[]byte("b"), value1},
 				{[]byte("c"), value1},
@@ -604,7 +604,7 @@ func Test_CowAbort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tr := New()
+			tr := New[int]()
 			for _, kv := range tt.oldTr {
 				tr.Upsert(kv.Key, kv.Value)
 			}
@@ -646,7 +646,7 @@ func Test_CowAbort(t *testing.T) {
 // originals. They still belong to the old trie, and without the mark a later
 // write that reaches them would change them in place.
 func Test_CowKeepsMarkOnOldNodes(t *testing.T) {
-	tr := New()
+	tr := New[int]()
 	for _, key := range []string{"a", "b", "c"} {
 		tr.Upsert([]byte(key), value1)
 	}
@@ -656,13 +656,13 @@ func Test_CowKeepsMarkOnOldNodes(t *testing.T) {
 	tx.Delete([]byte("b"))
 	tx.Upsert([]byte("d"), value1)
 
-	root := tr.root.(*branchNode)
+	root := tr.root.(*branchNode[int])
 	if !root.cowMarked() {
 		t.Error("old root lost its cow mark")
 	}
 	for _, twig := range root.twigs {
 		if !twig.cowMarked() {
-			t.Errorf("old leaf %q lost its cow mark", twig.(*leafNode).key)
+			t.Errorf("old leaf %q lost its cow mark", twig.(*leafNode[int]).key)
 		}
 	}
 }
@@ -686,11 +686,11 @@ func Test_CowConcurrentReaders(t *testing.T) {
 	}
 
 	r := rand.New(rand.NewSource(1))
-	tr := New()
+	tr := New[int]()
 	for i := range 1000 {
 		tr.Upsert(randKey(r), i)
 	}
-	var cur atomic.Pointer[Trie]
+	var cur atomic.Pointer[Trie[int]]
 	cur.Store(tr)
 
 	var wg sync.WaitGroup
@@ -704,12 +704,16 @@ func Test_CowConcurrentReaders(t *testing.T) {
 				for range 50 {
 					key := randKey(r)
 					val, found := snap.Get(key)
-					k, v, exact := snap.GetLessOrEqual(key)
+					k, v, exact, leFound := snap.GetLessOrEqual(key)
 					if exact != found || (found && (v != val || !bytes.Equal(k, key))) {
 						t.Errorf("Get(%x) = %v, %v but GetLessOrEqual = %x, %v, %v", key, val, found, k, v, exact)
 						return
 					}
-					if !found && k != nil && bytes.Compare(k, key) >= 0 {
+					if leFound != (k != nil) {
+						t.Errorf("GetLessOrEqual(%x) = %x, found=%v", key, k, leFound)
+						return
+					}
+					if !found && leFound && bytes.Compare(k, key) >= 0 {
 						t.Errorf("GetLessOrEqual(%x) = %x, not a smaller key", key, k)
 						return
 					}
