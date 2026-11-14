@@ -14,6 +14,7 @@ type KVPair struct {
 
 // Walk traverses the entire trie and applies the given function to each element's key
 // and value. If the function returns true, the corresponding key-value pair is included in the result.
+// The function must not modify the trie.
 func (tr *Trie) Walk(max int, f WalkFn) (pairs []KVPair) {
 	if f == nil {
 		f = defaultWalkFn

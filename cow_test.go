@@ -1,8 +1,12 @@
 package qp
 
 import (
+	"bytes"
 	"math"
+	"math/rand"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -635,5 +639,135 @@ func Test_CowAbort(t *testing.T) {
 				t.Errorf("Size got %v want %v", tr.Size(), len(result))
 			}
 		})
+	}
+}
+
+// A transaction copies cow-marked nodes and must leave the mark on the
+// originals. They still belong to the old trie, and without the mark a later
+// write that reaches them would change them in place.
+func Test_CowKeepsMarkOnOldNodes(t *testing.T) {
+	tr := New()
+	for _, key := range []string{"a", "b", "c"} {
+		tr.Upsert([]byte(key), value1)
+	}
+
+	tx := tr.Txn()
+	tx.Upsert([]byte("a"), value2)
+	tx.Delete([]byte("b"))
+	tx.Upsert([]byte("d"), value1)
+
+	root := tr.root.(*branchNode)
+	if !root.cowMarked() {
+		t.Error("old root lost its cow mark")
+	}
+	for _, twig := range root.twigs {
+		if !twig.cowMarked() {
+			t.Errorf("old leaf %q lost its cow mark", twig.(*leafNode).key)
+		}
+	}
+}
+
+// Test_CowConcurrentReaders runs the supported concurrency model under the
+// race detector: one writer commits transactions and publishes each new trie
+// through an atomic pointer, while readers use whatever version they loaded.
+func Test_CowConcurrentReaders(t *testing.T) {
+	const (
+		readers    = 4
+		readerRuns = 50
+		minRounds  = 100
+	)
+	alphabet := []byte{0x00, 0x01, 0x0f, 0x10, 0x61, 0x62, 0xf0, 0xff}
+	randKey := func(r *rand.Rand) []byte {
+		key := make([]byte, 1+r.Intn(4))
+		for i := range key {
+			key[i] = alphabet[r.Intn(len(alphabet))]
+		}
+		return key
+	}
+
+	r := rand.New(rand.NewSource(1))
+	tr := New()
+	for i := range 1000 {
+		tr.Upsert(randKey(r), i)
+	}
+	var cur atomic.Pointer[Trie]
+	cur.Store(tr)
+
+	var wg sync.WaitGroup
+	for g := range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := rand.New(rand.NewSource(int64(100 + g)))
+			for range readerRuns {
+				snap := cur.Load()
+				for range 50 {
+					key := randKey(r)
+					val, found := snap.Get(key)
+					k, v, exact := snap.GetLessOrEqual(key)
+					if exact != found || (found && (v != val || !bytes.Equal(k, key))) {
+						t.Errorf("Get(%x) = %v, %v but GetLessOrEqual = %x, %v, %v", key, val, found, k, v, exact)
+						return
+					}
+					if !found && k != nil && bytes.Compare(k, key) >= 0 {
+						t.Errorf("GetLessOrEqual(%x) = %x, not a smaller key", key, k)
+						return
+					}
+				}
+
+				// A version never changes once it is published: a full
+				// iteration is sorted and as long as Size says.
+				var prev []byte
+				n := 0
+				it := snap.Iterator()
+				for {
+					k, _, ok := it.Next()
+					if !ok {
+						break
+					}
+					if prev != nil && bytes.Compare(prev, k) >= 0 {
+						t.Errorf("iteration out of order: %x then %x", prev, k)
+						return
+					}
+					prev = k
+					n++
+				}
+				if n != snap.Size() {
+					t.Errorf("iterated %d keys, Size() = %d", n, snap.Size())
+					return
+				}
+			}
+		}()
+	}
+
+	readersDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(readersDone)
+	}()
+
+	// Keep writing until every reader has finished.
+	for round := 0; ; round++ {
+		if round >= minRounds {
+			select {
+			case <-readersDone:
+				return
+			default:
+			}
+		}
+		tx := cur.Load().Txn()
+		for i := range 30 {
+			key := randKey(r)
+			if r.Intn(3) == 0 {
+				tx.Delete(key)
+			} else {
+				tx.Upsert(key, i)
+			}
+		}
+		if r.Intn(5) == 0 {
+			tx.Abort()
+		} else {
+			cur.Store(tx.Commit())
+		}
 	}
 }
