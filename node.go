@@ -5,88 +5,88 @@ import (
 	"math/bits"
 )
 
-type trieNode interface {
+type trieNode[V any] interface {
 	// cow
-	dup() trieNode
+	dup() trieNode[V]
 	cowMarked() bool
 	markCow()
 }
 
-type leafNode struct {
+type leafNode[V any] struct {
 	key   []byte
-	value any
+	value V
 	cow   bool
 }
 
-func newLeafNode(key []byte, value any) *leafNode {
-	return &leafNode{key: bytes.Clone(key), value: value}
+func newLeafNode[V any](key []byte, value V) *leafNode[V] {
+	return &leafNode[V]{key: bytes.Clone(key), value: value}
 }
 
-func (ln *leafNode) dup() trieNode {
-	return &leafNode{key: ln.key, value: ln.value}
+func (ln *leafNode[V]) dup() trieNode[V] {
+	return &leafNode[V]{key: ln.key, value: ln.value}
 }
 
-func (ln *leafNode) cowMarked() bool {
+func (ln *leafNode[V]) cowMarked() bool {
 	return ln.cow
 }
 
-func (ln *leafNode) markCow() {
+func (ln *leafNode[V]) markCow() {
 	ln.cow = true
 }
 
-type branchNode struct {
-	twigs  []trieNode   // up to 17 twigs, 0th is NO_BYTE
-	bitmap bitmapT      // store which slot is not-NULL
-	index  nibbleIndexT // nibble index, start from 0
+type branchNode[V any] struct {
+	twigs  []trieNode[V] // up to 17 twigs, 0th is NO_BYTE
+	bitmap bitmapT       // store which slot is not-NULL
+	index  nibbleIndexT  // nibble index, start from 0
 	// cow
 	cow bool
 }
 
-func (bn *branchNode) dup() trieNode {
-	var newBn branchNode
-	newBn.twigs = make([]trieNode, len(bn.twigs))
+func (bn *branchNode[V]) dup() trieNode[V] {
+	var newBn branchNode[V]
+	newBn.twigs = make([]trieNode[V], len(bn.twigs))
 	copy(newBn.twigs, bn.twigs)
 	newBn.index = bn.index
 	newBn.bitmap = bn.bitmap
 	return &newBn
 }
 
-func (bn *branchNode) markTwigs() {
+func (bn *branchNode[V]) markTwigs() {
 	for i := 0; i < bn.twigOffsetMax(); i++ {
 		bn.twigs[i].markCow()
 	}
 }
 
-func (bn *branchNode) cowMarked() bool {
+func (bn *branchNode[V]) cowMarked() bool {
 	return bn.cow
 }
 
-func (bn *branchNode) markCow() {
+func (bn *branchNode[V]) markCow() {
 	bn.cow = true
 }
 
-func (bn *branchNode) hasTwig(b bitmapT) bool {
+func (bn *branchNode[V]) hasTwig(b bitmapT) bool {
 	return bn.bitmap&b > 0
 }
 
-func (bn *branchNode) twigOffset(b bitmapT) int {
+func (bn *branchNode[V]) twigOffset(b bitmapT) int {
 	w := bn.bitmap & (b - 1)
 	return bits.OnesCount16(uint16(w))
 }
 
-func (bn *branchNode) twig(i int) *trieNode {
+func (bn *branchNode[V]) twig(i int) *trieNode[V] {
 	return &bn.twigs[i]
 }
 
-func (bn *branchNode) twigOffsetMax() int {
+func (bn *branchNode[V]) twigOffsetMax() int {
 	return bits.OnesCount32(bn.bitmap)
 }
 
-func (bn *branchNode) twigBit(key []byte) bitmapT {
+func (bn *branchNode[V]) twigBit(key []byte) bitmapT {
 	return nibbleBit(bn.index, key)
 }
 
-func (bn *branchNode) twigIdx(child trieNode) int {
+func (bn *branchNode[V]) twigIdx(child trieNode[V]) int {
 	for i := range bn.twigs {
 		if child == bn.twigs[i] {
 			return i
@@ -95,11 +95,11 @@ func (bn *branchNode) twigIdx(child trieNode) int {
 	return -1
 }
 
-func (bn *branchNode) twigTail(twigIdx int) bool {
+func (bn *branchNode[V]) twigTail(twigIdx int) bool {
 	return twigIdx+1 >= bn.twigOffsetMax()
 }
 
-func (bn *branchNode) growTwigs(index nibbleIndexT, newKey []byte, newLeaf *leafNode) {
+func (bn *branchNode[V]) growTwigs(index nibbleIndexT, newKey []byte, newLeaf *leafNode[V]) {
 	b := nibbleBit(index, newKey)
 	twigOffset := bn.twigOffset(b)
 	bn.twigs = append(bn.twigs, nil)
@@ -108,7 +108,7 @@ func (bn *branchNode) growTwigs(index nibbleIndexT, newKey []byte, newLeaf *leaf
 	bn.bitmap |= b
 }
 
-func (bn *branchNode) removeTwig(b bitmapT) {
+func (bn *branchNode[V]) removeTwig(b bitmapT) {
 	twigOffset := bn.twigOffset(b)
 	copy(bn.twigs[twigOffset:], bn.twigs[twigOffset+1:])
 	// Nil the vacated slot before shrinking so the backing array does not
@@ -118,11 +118,11 @@ func (bn *branchNode) removeTwig(b bitmapT) {
 	bn.bitmap &= ^b
 }
 
-func newBranchNode(n trieNode, index nibbleIndexT, oldKey, newKey []byte, newLeaf *leafNode) *branchNode {
-	var bn branchNode
+func newBranchNode[V any](n trieNode[V], index nibbleIndexT, oldKey, newKey []byte, newLeaf *leafNode[V]) *branchNode[V] {
+	var bn branchNode[V]
 	b1 := nibbleBit(index, newKey)
 	b2 := nibbleBit(index, oldKey)
-	bn.twigs = make([]trieNode, 2)
+	bn.twigs = make([]trieNode[V], 2)
 	bn.index = index
 	bn.bitmap = b1 | b2
 
