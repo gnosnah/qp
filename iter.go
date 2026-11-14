@@ -11,7 +11,13 @@ type Iterator struct {
 // Iterator returns a new iterator for traversing the trie.
 // The iterator starts at the root node and can be used to iterate
 // through all key-value pairs stored in the trie in lexicographical order.
-// Returns nil if the trie is empty.
+// On an empty trie the first call to Next reports ok == false.
+//
+// The iterator is valid only while the trie is not modified. Trie.Upsert and
+// Trie.Delete on the same trie invalidate it, and so do Txn.Upsert and
+// Txn.Delete for an iterator over the transaction's NewTrie. Afterwards Next
+// may repeat keys, skip keys, or panic. A transaction does not modify the trie
+// it was started from, so an iterator over that trie stays valid.
 func (tr *Trie) Iterator() *Iterator {
 	var it Iterator
 	it.tr = tr
@@ -61,6 +67,8 @@ func (it *Iterator) firstLeaf() (key []byte, value any, ok bool) {
 		case *leafNode:
 			leaf := (*n).(*leafNode)
 			return leaf.key, leaf.value, true
+		default:
+			panic(errBadNode)
 		}
 	}
 }

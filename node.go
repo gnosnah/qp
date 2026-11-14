@@ -6,22 +6,16 @@ import (
 )
 
 type trieNode interface {
-	isBranch() bool
 	// cow
 	dup() trieNode
 	cowMarked() bool
 	markCow()
-	clearCow()
 }
 
 type leafNode struct {
 	key   []byte
 	value any
 	cow   bool
-}
-
-func (*leafNode) isBranch() bool {
-	return false
 }
 
 func newLeafNode(key []byte, value any) *leafNode {
@@ -40,20 +34,12 @@ func (ln *leafNode) markCow() {
 	ln.cow = true
 }
 
-func (ln *leafNode) clearCow() {
-	ln.cow = false
-}
-
 type branchNode struct {
 	twigs  []trieNode   // up to 17 twigs, 0th is NO_BYTE
 	bitmap bitmapT      // store which slot is not-NULL
 	index  nibbleIndexT // nibble index, start from 0
 	// cow
 	cow bool
-}
-
-func (*branchNode) isBranch() bool {
-	return true
 }
 
 func (bn *branchNode) dup() trieNode {
@@ -77,10 +63,6 @@ func (bn *branchNode) cowMarked() bool {
 
 func (bn *branchNode) markCow() {
 	bn.cow = true
-}
-
-func (bn *branchNode) clearCow() {
-	bn.cow = false
 }
 
 func (bn *branchNode) hasTwig(b bitmapT) bool {

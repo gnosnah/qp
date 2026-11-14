@@ -11,11 +11,14 @@ type nibbleIndexT = uint16 // nibble index type
 
 // OnInsertValFn is a function type that processes a new value before insertion.
 // It takes the new value as input and returns the final value to be used.
+// It must not modify the trie or transaction that calls it.
 type OnInsertValFn = func(newVal any) (finalVal any)
 
 // OnUpdateValFn is a function type that takes two parameters of type any (newVal and oldVal)
 // and returns a finalVal of type any. It is used to handle value updates by comparing
 // the new and old values and determining the final value to be used.
+// It must not modify the trie or transaction that calls it, and it
+// must return a new value instead of changing oldVal in place.
 type OnUpdateValFn = func(newVal, oldVal any) (finalVal any)
 
 const (
@@ -27,6 +30,10 @@ var (
 	errKeyEmpty   = fmt.Errorf("empty key")
 	errKeyTooLong = fmt.Errorf("max key length is %d bytes", maxKeyBytes)
 	errInternal   = fmt.Errorf("internal error")
+	// errBadNode is the panic value when a walk meets a node that is neither a
+	// leaf nor a branch. The trie is corrupted, most likely by writes from
+	// several goroutines or by breaking the transaction rules.
+	errBadNode = fmt.Errorf("internal error: nil node, the trie is corrupted")
 )
 
 var (
@@ -49,6 +56,8 @@ func WithOnUpdate(f OnUpdateValFn) Option {
 	}
 }
 
+// Trie is a qp-trie that maps byte-string keys to values.
+// Create one with New. The zero value is not usable.
 type Trie struct {
 	root     trieNode
 	size     int
@@ -101,6 +110,8 @@ func (tr *Trie) findMatch(key []byte, exactMatch bool) *leafNode {
 				}
 			}
 			ptr = bn.twig(i)
+		default:
+			panic(errBadNode)
 		}
 	}
 }
@@ -125,6 +136,8 @@ func (tr *Trie) findInsert(key []byte, index nibbleIndexT) (ptr *trieNode, grow 
 			}
 			i := n.twigOffset(b)
 			ptr = n.twig(i)
+		default:
+			panic(errBadNode)
 		}
 	}
 }
@@ -147,6 +160,8 @@ func (tr *Trie) findDelete(key []byte) (parentBranch *trieNode, leaf *leafNode, 
 			i := n.twigOffset(b)
 			parentBranch = ptr
 			ptr = n.twig(i)
+		default:
+			panic(errBadNode)
 		}
 	}
 }
@@ -253,6 +268,8 @@ func (tr *Trie) findPrev(index nibbleIndexT, key []byte) (prev *trieNode, cur *t
 				return
 			}
 			cur = n.twig(i)
+		default:
+			panic(errBadNode)
 		}
 	}
 }
@@ -268,6 +285,8 @@ func (tr *Trie) lastLeaf(node *trieNode) *leafNode {
 			bn := (*ptr).(*branchNode)
 			offsetMax := bn.twigOffsetMax()
 			ptr = n.twig(offsetMax - 1)
+		default:
+			panic(errBadNode)
 		}
 	}
 }
@@ -275,6 +294,7 @@ func (tr *Trie) lastLeaf(node *trieNode) *leafNode {
 // GetLessOrEqual returns the key-value pair with the largest key that is less than or equal to
 // the given key. It returns the key, value, and a boolean indicating whether an exact match was found.
 // If no such key exists, it returns nil, nil, false.
+// The returned key should not be modified by the caller.
 func (tr *Trie) GetLessOrEqual(key []byte) (k []byte, v any, exactMatch bool) {
 	must(key)
 
