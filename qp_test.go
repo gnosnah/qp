@@ -12,8 +12,8 @@ import (
 )
 
 func Test_OnInsert(t *testing.T) {
-	onInsert := func(newVal any) (finalVal any) {
-		v := newVal.(int)
+	onInsert := func(newVal int) (finalVal int) {
+		v := newVal
 		return v * 10
 	}
 	tr := New(WithOnInsert(onInsert))
@@ -31,16 +31,16 @@ func Test_OnInsert(t *testing.T) {
 			t.Fatalf("%s not exist", key)
 		}
 
-		if val.(int) != i*10 {
+		if val != i*10 {
 			t.Fatalf("key: %s, expected value: %d, got: %v", key, i*10, val)
 		}
 	}
 }
 
 func Test_OnUpdate(t *testing.T) {
-	onUpdate := func(newVal, oldVal any) (finalVal any) {
-		v := newVal.(int)
-		return v + oldVal.(int)
+	onUpdate := func(newVal, oldVal int) (finalVal int) {
+		v := newVal
+		return v + oldVal
 	}
 	tr := New(WithOnUpdate(onUpdate))
 
@@ -64,39 +64,104 @@ func Test_OnUpdate(t *testing.T) {
 			t.Fatalf("%s not exist", key)
 		}
 
-		if val.(int) != i*2 {
+		if val != i*2 {
 			t.Fatalf("key: %s, expected value: %d, got: %v", key, i*10, val)
 		}
 	}
 }
 
 func Test_GetEmpty(t *testing.T) {
-	tr := New()
+	tr := New[int]()
 	data := []string{"a", "b"}
 	for _, d := range data {
 		val, found := tr.Get([]byte(d))
 		if found {
 			t.Fatalf("%s should not exist", d)
 		}
-		if val != nil {
-			t.Fatalf("%s should be nil", d)
+		if val != 0 {
+			t.Fatalf("%s should be the zero value", d)
 		}
 	}
 }
 
+// A miss returns the zero value of the value type: nil for a pointer type,
+// an empty struct for a struct type.
+func Test_MissReturnsZeroValue(t *testing.T) {
+	type record struct {
+		ttl  uint32
+		data string
+	}
+	miss := []byte("b")
+
+	t.Run("pointer", func(t *testing.T) {
+		tr := New[*record]()
+		tr.Upsert([]byte("a"), &record{ttl: 1})
+		tr.Upsert([]byte("c"), &record{ttl: 2})
+
+		if v, found := tr.Get(miss); found || v != nil {
+			t.Errorf("Get = %v, %v; want nil, false", v, found)
+		}
+		if v, found := tr.Delete(miss); found || v != nil {
+			t.Errorf("Delete = %v, %v; want nil, false", v, found)
+		}
+		if v, isUpdate := tr.Upsert(miss, &record{ttl: 3}); isUpdate || v != nil {
+			t.Errorf("Upsert = %v, %v; want nil, false", v, isUpdate)
+		}
+		if k, v, exact, found := tr.GetLessOrEqual([]byte("A")); found || k != nil || v != nil || exact {
+			t.Errorf("GetLessOrEqual = %q, %v, %v, %v; want no key", k, v, exact, found)
+		}
+
+		// "b" is stored now, so the transaction needs another missing key.
+		tx := tr.Txn()
+		txMiss := []byte("d")
+		if v, found := tx.Get(txMiss); found || v != nil {
+			t.Errorf("Txn.Get = %v, %v; want nil, false", v, found)
+		}
+		if v, found := tx.Delete(txMiss); found || v != nil {
+			t.Errorf("Txn.Delete = %v, %v; want nil, false", v, found)
+		}
+		if v, isUpdate := tx.Upsert(txMiss, &record{ttl: 4}); isUpdate || v != nil {
+			t.Errorf("Txn.Upsert = %v, %v; want nil, false", v, isUpdate)
+		}
+	})
+
+	t.Run("struct", func(t *testing.T) {
+		var zero record
+		tr := New[record]()
+		tr.Upsert([]byte("a"), record{ttl: 1, data: "a"})
+		tr.Upsert([]byte("c"), record{ttl: 2, data: "c"})
+
+		if v, found := tr.Get(miss); found || v != zero {
+			t.Errorf("Get = %v, %v; want zero value, false", v, found)
+		}
+		if v, found := tr.Delete(miss); found || v != zero {
+			t.Errorf("Delete = %v, %v; want zero value, false", v, found)
+		}
+		if k, v, exact, found := tr.GetLessOrEqual([]byte("A")); found || k != nil || v != zero || exact {
+			t.Errorf("GetLessOrEqual = %q, %v, %v, %v; want no key", k, v, exact, found)
+		}
+
+		it := tr.Iterator()
+		it.Next()
+		it.Next()
+		if k, v, ok := it.Next(); ok || k != nil || v != zero {
+			t.Errorf("Next past the end = %q, %v, %v; want no key", k, v, ok)
+		}
+	})
+}
+
 func Test_Get(t *testing.T) {
 	data := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
-	tr := New()
+	tr := New[int]()
 	for _, d := range data {
 		tr.Upsert([]byte(d), value1)
 	}
 
 	for _, d := range data {
-		v, found := tr.Get([]byte(d))
+		val, found := tr.Get([]byte(d))
 		if !found {
 			t.Fatalf("%s not exist", d)
 		}
-		val := v.(int)
 		if val != value1 {
 			t.Fatalf("%s val %d != value1 %d", d, val, value1)
 		}
@@ -110,7 +175,7 @@ func Test_Get(t *testing.T) {
 func Test_Upsert(t *testing.T) {
 	data := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
 
-	tr := New()
+	tr := New[int]()
 	for _, d := range data {
 		tr.Upsert([]byte(d), value1)
 	}
@@ -122,7 +187,7 @@ func Test_Upsert(t *testing.T) {
 	update := []string{"a", "b", "c"}
 	for _, d := range update {
 		oldVal, isUpdate := tr.Upsert([]byte(d), value2)
-		if oldVal.(int) != value1 {
+		if oldVal != value1 {
 			t.Fatalf("oldVal not match")
 		}
 		if !isUpdate {
@@ -146,11 +211,11 @@ func Test_Upsert(t *testing.T) {
 }
 
 func Test_UpsertCopiesKey(t *testing.T) {
-	tr := New()
+	tr := New[int]()
 	buf := []byte("alpha")
 	tr.Upsert(buf, value1)
 
-	stored := tr.root.(*leafNode).key
+	stored := tr.root.(*leafNode[int]).key
 	if &stored[0] == &buf[0] {
 		t.Fatal("root leaf aliases the caller buffer")
 	}
@@ -162,11 +227,11 @@ func Test_UpsertCopiesKey(t *testing.T) {
 	copy(buf, "xxxxx")
 
 	got, found := tr.Get([]byte("alpha"))
-	if !found || got.(int) != value1 {
+	if !found || got != value1 {
 		t.Fatalf("Get(alpha) = %v found=%v, want %d true", got, found, value1)
 	}
 	got, found = tr.Get([]byte("brave"))
-	if !found || got.(int) != value2 {
+	if !found || got != value2 {
 		t.Fatalf("Get(brave) = %v found=%v, want %d true", got, found, value2)
 	}
 	if _, found = tr.Get([]byte("xxxxx")); found {
@@ -174,11 +239,11 @@ func Test_UpsertCopiesKey(t *testing.T) {
 	}
 }
 
-func aliasesCaller(n trieNode, key, buf []byte) bool {
+func aliasesCaller(n trieNode[int], key, buf []byte) bool {
 	switch node := n.(type) {
-	case *leafNode:
+	case *leafNode[int]:
 		return bytes.Equal(node.key, key) && len(node.key) > 0 && &node.key[0] == &buf[0]
-	case *branchNode:
+	case *branchNode[int]:
 		for _, tw := range node.twigs {
 			if tw != nil && aliasesCaller(tw, key, buf) {
 				return true
@@ -191,10 +256,10 @@ func aliasesCaller(n trieNode, key, buf []byte) bool {
 func Test_WordsSetGet(t *testing.T) {
 	data := loadTestData(wordsSortedPath)
 
-	tr := New()
+	tr := New[int]()
 	for _, key := range data {
 		oldVal, isUpdate := tr.Upsert(key, value1)
-		if oldVal != nil || isUpdate {
+		if oldVal != 0 || isUpdate {
 			t.Fatalf("set key: %s failed", string(key))
 		}
 	}
@@ -204,7 +269,7 @@ func Test_WordsSetGet(t *testing.T) {
 		if !found {
 			t.Fatalf("key: %s not found", string(key))
 		}
-		if val.(int) != value1 {
+		if val != value1 {
 			t.Fatalf("value not match, expect: %d, got: %v", value1, val)
 		}
 	}
@@ -220,7 +285,7 @@ func Test_RemoveTwigShrinksSlice(t *testing.T) {
 		keys[i] = []byte{0x60 + byte(i)}
 	}
 
-	tr := New()
+	tr := New[int]()
 	for _, key := range keys {
 		tr.Upsert(key, value1)
 	}
@@ -260,16 +325,16 @@ func Test_RemoveTwigShrinksSlice(t *testing.T) {
 		t.Fatalf("Size = %d, want %d", tr.Size(), len(keys))
 	}
 	val, found := tr.Get(keys[1])
-	if !found || val.(int) != value2 {
+	if !found || val != value2 {
 		t.Fatalf("Get(%x) = %v found=%v, want %d true", keys[1], val, found, value2)
 	}
 }
 
-func assertTwigsTight(t *testing.T, n trieNode, wantLen int) {
+func assertTwigsTight(t *testing.T, n trieNode[int], wantLen int) {
 	t.Helper()
-	bn, ok := n.(*branchNode)
+	bn, ok := n.(*branchNode[int])
 	if !ok {
-		t.Fatalf("node is %T, want *branchNode", n)
+		t.Fatalf("node is %T, want *branchNode[int]", n)
 	}
 	if len(bn.twigs) != wantLen || bn.twigOffsetMax() != wantLen {
 		t.Fatalf("twigs len=%d live=%d, want %d", len(bn.twigs), bn.twigOffsetMax(), wantLen)
@@ -285,15 +350,15 @@ func assertTwigsTight(t *testing.T, n trieNode, wantLen int) {
 }
 
 func Test_DeleteEmpty(t *testing.T) {
-	tr := New()
+	tr := New[int]()
 	data := []string{"a", "b"}
 	for _, d := range data {
 		oldVal, found := tr.Delete([]byte(d))
 		if found {
 			t.Fatalf("%s should not exist", d)
 		}
-		if oldVal != nil {
-			t.Fatalf("%s should be nil", d)
+		if oldVal != 0 {
+			t.Fatalf("%s should be the zero value", d)
 		}
 	}
 }
@@ -309,7 +374,7 @@ func Test_RandomString(t *testing.T) {
 	t.Logf("generated kvs size:%d, took:%d(ms)", len(kvs), elapsed)
 
 	start = time.Now()
-	tr := New()
+	tr := New[[]byte]()
 	for k, v := range kvs {
 		tr.Upsert([]byte(k), []byte(v))
 	}
@@ -325,7 +390,7 @@ func Test_RandomString(t *testing.T) {
 		if !ok {
 			t.Errorf("tr.Get(%s) should exist", k)
 		}
-		if !bytes.Equal(val.([]byte), []byte(v)) {
+		if !bytes.Equal(val, []byte(v)) {
 			t.Errorf("got: %v, expected: %v", val, v)
 		}
 	}
@@ -338,7 +403,7 @@ func Test_RandomString(t *testing.T) {
 		if !ok {
 			t.Errorf("tr.Delete(%s) should exist", k)
 		}
-		if !bytes.Equal(val.([]byte), []byte(v)) {
+		if !bytes.Equal(val, []byte(v)) {
 			t.Errorf("got: %v, expected: %v", val, v)
 		}
 	}
@@ -355,27 +420,27 @@ func Test_RandomString(t *testing.T) {
 func Test_NilNodePanics(t *testing.T) {
 	tests := []struct {
 		name string
-		op   func(tr *Trie)
+		op   func(tr *Trie[int])
 	}{
-		{"Get", func(tr *Trie) { tr.Get([]byte("b")) }},
-		{"Upsert", func(tr *Trie) { tr.Upsert([]byte("b"), value2) }},
-		{"Delete", func(tr *Trie) { tr.Delete([]byte("b")) }},
-		{"GetLessOrEqual on the key", func(tr *Trie) { tr.GetLessOrEqual([]byte("b")) }},
+		{"Get", func(tr *Trie[int]) { tr.Get([]byte("b")) }},
+		{"Upsert", func(tr *Trie[int]) { tr.Upsert([]byte("b"), value2) }},
+		{"Delete", func(tr *Trie[int]) { tr.Delete([]byte("b")) }},
+		{"GetLessOrEqual on the key", func(tr *Trie[int]) { tr.GetLessOrEqual([]byte("b")) }},
 		// "c" is not stored; the walk for its predecessor ends in the nil twig.
-		{"GetLessOrEqual on the next key", func(tr *Trie) { tr.GetLessOrEqual([]byte("c")) }},
-		{"Walk", func(tr *Trie) { tr.Walk(math.MaxInt, nil) }},
-		{"Txn.Upsert", func(tr *Trie) { tr.Txn().Upsert([]byte("b"), value2) }},
-		{"Txn.Delete", func(tr *Trie) { tr.Txn().Delete([]byte("b")) }},
+		{"GetLessOrEqual on the next key", func(tr *Trie[int]) { tr.GetLessOrEqual([]byte("c")) }},
+		{"Walk", func(tr *Trie[int]) { tr.Walk(math.MaxInt, nil) }},
+		{"Txn.Upsert", func(tr *Trie[int]) { tr.Txn().Upsert([]byte("b"), value2) }},
+		{"Txn.Delete", func(tr *Trie[int]) { tr.Txn().Delete([]byte("b")) }},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tr := New()
+			tr := New[int]()
 			for _, key := range []string{"a", "b", "d"} {
 				tr.Upsert([]byte(key), value1)
 			}
 			// The root is one branch with three leaves. Drop the leaf of "b".
-			tr.root.(*branchNode).twigs[1] = nil
+			tr.root.(*branchNode[int]).twigs[1] = nil
 
 			panicked := make(chan bool, 1)
 			go func() {
@@ -443,17 +508,21 @@ func Test_GetLessOrEqual(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tr := New()
+			tr := New[int]()
 			for _, d := range tt.data {
 				tr.Upsert([]byte(d), value1)
 			}
 			for _, item := range tt.items {
 				leKey := ""
-				k, _, exactMatch := tr.GetLessOrEqual([]byte(item.searchK))
+				k, _, exactMatch, found := tr.GetLessOrEqual([]byte(item.searchK))
 				if exactMatch != item.expectedExactMatch {
 					t.Errorf("exactMatch = %v, want %v", exactMatch, item.expectedExactMatch)
 				}
-				if k != nil {
+				// No test case stores an empty key, so "" stands for no key.
+				if wantFound := item.expectedK != ""; found != wantFound {
+					t.Errorf("search: %s, found = %v, want %v", item.searchK, found, wantFound)
+				}
+				if found {
 					leKey = string(k)
 				}
 				if item.expectedK != leKey {
@@ -468,7 +537,7 @@ func Benchmark_Words_Upsert(b *testing.B) {
 	words := loadTestData(wordsPath)
 
 	for b.Loop() {
-		tr := New()
+		tr := New[[]byte]()
 		for _, w := range words {
 			tr.Upsert(w, w)
 		}
@@ -477,7 +546,7 @@ func Benchmark_Words_Upsert(b *testing.B) {
 
 func Benchmark_Words_Get(b *testing.B) {
 	words := loadTestData(wordsPath)
-	tr := New()
+	tr := New[[]byte]()
 	for _, w := range words {
 		tr.Upsert(w, w)
 	}
@@ -488,7 +557,7 @@ func Benchmark_Words_Get(b *testing.B) {
 			if !ok {
 				b.Fatalf("failed to get a value from the tree. key: %v", w)
 			}
-			if !bytes.Equal(val.([]byte), w) {
+			if !bytes.Equal(val, w) {
 				b.Fatalf("returned value does not match an expected one. got: %v, expected: %v", val, w)
 			}
 		}
@@ -499,7 +568,7 @@ func Benchmark_UUID_Upsert(b *testing.B) {
 	uuids := loadTestData(uuidPath)
 
 	for b.Loop() {
-		tr := New()
+		tr := New[[]byte]()
 		for _, id := range uuids {
 			tr.Upsert(id, id)
 		}
@@ -508,7 +577,7 @@ func Benchmark_UUID_Upsert(b *testing.B) {
 
 func Benchmark_UUID_Get(b *testing.B) {
 	uuids := loadTestData(uuidPath)
-	tr := New()
+	tr := New[[]byte]()
 	for _, id := range uuids {
 		tr.Upsert(id, id)
 	}
@@ -519,7 +588,7 @@ func Benchmark_UUID_Get(b *testing.B) {
 			if !ok {
 				b.Fatalf("failed to get a value from the tree. key: %v", id)
 			}
-			if !bytes.Equal(val.([]byte), id) {
+			if !bytes.Equal(val, id) {
 				b.Fatalf("returned value does not match an expected one. got: %v, expected: %v", val, id)
 			}
 		}
