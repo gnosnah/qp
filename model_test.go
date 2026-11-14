@@ -34,9 +34,9 @@ func (m trieModel) sortedKeys() []string {
 
 // trieWriter is the part of the API that Trie and Txn share.
 type trieWriter interface {
-	Get(key []byte) (val any, found bool)
-	Upsert(key []byte, value any) (oldVal any, isUpdate bool)
-	Delete(key []byte) (oldVal any, found bool)
+	Get(key []byte) (val int, found bool)
+	Upsert(key []byte, value int) (oldVal int, isUpdate bool)
+	Delete(key []byte) (oldVal int, found bool)
 }
 
 type keyGen struct {
@@ -120,19 +120,19 @@ func applyRandomOps(t *testing.T, tag string, r *rand.Rand, w trieWriter, m trie
 		switch r.Intn(4) {
 		case 0:
 			old, found := w.Delete(key)
-			if found != wantFound || (found && old != want) || (!found && old != nil) {
+			if found != wantFound || (found && old != want) || (!found && old != 0) {
 				t.Fatalf("%s: Delete(%x) = %v, %v; want %v, %v", tag, key, old, found, want, wantFound)
 			}
 			delete(m, string(key))
 		case 1:
 			val, found := w.Get(key)
-			if found != wantFound || (found && val != want) || (!found && val != nil) {
+			if found != wantFound || (found && val != want) || (!found && val != 0) {
 				t.Fatalf("%s: Get(%x) = %v, %v; want %v, %v", tag, key, val, found, want, wantFound)
 			}
 		default:
 			val := r.Int()
 			old, isUpdate := w.Upsert(key, val)
-			if isUpdate != wantFound || (isUpdate && old != want) || (!isUpdate && old != nil) {
+			if isUpdate != wantFound || (isUpdate && old != want) || (!isUpdate && old != 0) {
 				t.Fatalf("%s: Upsert(%x) = %v, %v; want %v, %v", tag, key, old, isUpdate, want, wantFound)
 			}
 			m[string(key)] = val
@@ -141,11 +141,11 @@ func applyRandomOps(t *testing.T, tag string, r *rand.Rand, w trieWriter, m trie
 }
 
 // checkStructure verifies what every branch of a qp-trie must satisfy.
-func checkStructure(n trieNode, parentIndex int) error {
+func checkStructure(n trieNode[int], parentIndex int) error {
 	if n == nil {
 		return errors.New("nil node")
 	}
-	bn, ok := n.(*branchNode)
+	bn, ok := n.(*branchNode[int])
 	if !ok {
 		return nil
 	}
@@ -168,8 +168,8 @@ func checkStructure(n trieNode, parentIndex int) error {
 
 // trieShape returns the largest twig count of any branch and the number of
 // nodes on the longest path from the root to a leaf.
-func trieShape(n trieNode) (maxTwigs, depth int) {
-	bn, ok := n.(*branchNode)
+func trieShape(n trieNode[int]) (maxTwigs, depth int) {
+	bn, ok := n.(*branchNode[int])
 	if !ok {
 		if n == nil {
 			return 0, 0
@@ -187,7 +187,7 @@ func trieShape(n trieNode) (maxTwigs, depth int) {
 
 // checkModel compares the whole trie with the model: size, structure, iteration
 // order, and Get and GetLessOrEqual for every stored key and every probe.
-func checkModel(t *testing.T, tag string, tr *Trie, m trieModel, probes [][]byte) {
+func checkModel(t *testing.T, tag string, tr *Trie[int], m trieModel, probes [][]byte) {
 	t.Helper()
 	keys := m.sortedKeys()
 	if tr.Size() != len(keys) {
@@ -218,29 +218,29 @@ func checkModel(t *testing.T, tag string, tr *Trie, m trieModel, probes [][]byte
 	}
 }
 
-func checkLookup(t *testing.T, tag string, tr *Trie, m trieModel, keys []string, key []byte) {
+func checkLookup(t *testing.T, tag string, tr *Trie[int], m trieModel, keys []string, key []byte) {
 	t.Helper()
 	want, wantFound := m[string(key)]
 	val, found := tr.Get(key)
-	if found != wantFound || (found && val != want) || (!found && val != nil) {
+	if found != wantFound || (found && val != want) || (!found && val != 0) {
 		t.Fatalf("%s: Get(%x) = %v, %v; want %v, %v", tag, key, val, found, want, wantFound)
 	}
 
-	k, v, exact := tr.GetLessOrEqual(key)
+	k, v, exact, leFound := tr.GetLessOrEqual(key)
 	i := sort.SearchStrings(keys, string(key)) // first stored key >= key
 	switch {
 	case wantFound:
-		if !exact || !bytes.Equal(k, key) || v != want {
-			t.Fatalf("%s: GetLessOrEqual(%x) = %x, %v, %v; want exact match", tag, key, k, v, exact)
+		if !leFound || !exact || !bytes.Equal(k, key) || v != want {
+			t.Fatalf("%s: GetLessOrEqual(%x) = %x, %v, %v, %v; want exact match", tag, key, k, v, exact, leFound)
 		}
 	case i == 0:
-		if k != nil || v != nil || exact {
-			t.Fatalf("%s: GetLessOrEqual(%x) = %x, %v, %v; want no key", tag, key, k, v, exact)
+		if leFound || k != nil || v != 0 || exact {
+			t.Fatalf("%s: GetLessOrEqual(%x) = %x, %v, %v, %v; want no key", tag, key, k, v, exact, leFound)
 		}
 	default:
 		prev := keys[i-1]
-		if exact || string(k) != prev || v != m[prev] {
-			t.Fatalf("%s: GetLessOrEqual(%x) = %x, %v, %v; want %x, %v", tag, key, k, v, exact, prev, m[prev])
+		if !leFound || exact || string(k) != prev || v != m[prev] {
+			t.Fatalf("%s: GetLessOrEqual(%x) = %x, %v, %v, %v; want %x, %v", tag, key, k, v, exact, leFound, prev, m[prev])
 		}
 	}
 }
@@ -250,16 +250,16 @@ func checkLookup(t *testing.T, tag string, tr *Trie, m trieModel, keys []string,
 // also belongs to the base trie must be cow-marked. The nodes above it were
 // created by the transaction and are changed in place; without the mark, the
 // shared node would be changed in place as well.
-func checkCowFrontier(t *testing.T, tag string, newTr, base *Trie) {
+func checkCowFrontier(t *testing.T, tag string, newTr, base *Trie[int]) {
 	t.Helper()
-	baseNodes := make(map[trieNode]bool)
-	var collect func(n trieNode)
-	collect = func(n trieNode) {
+	baseNodes := make(map[trieNode[int]]bool)
+	var collect func(n trieNode[int])
+	collect = func(n trieNode[int]) {
 		if n == nil {
 			return
 		}
 		baseNodes[n] = true
-		if bn, ok := n.(*branchNode); ok {
+		if bn, ok := n.(*branchNode[int]); ok {
 			for _, twig := range bn.twigs {
 				collect(twig)
 			}
@@ -268,8 +268,8 @@ func checkCowFrontier(t *testing.T, tag string, newTr, base *Trie) {
 	collect(base.root)
 
 	unmarked := 0
-	var walk func(n trieNode)
-	walk = func(n trieNode) {
+	var walk func(n trieNode[int])
+	walk = func(n trieNode[int]) {
 		if n == nil {
 			return
 		}
@@ -279,7 +279,7 @@ func checkCowFrontier(t *testing.T, tag string, newTr, base *Trie) {
 			}
 			return
 		}
-		if bn, ok := n.(*branchNode); ok {
+		if bn, ok := n.(*branchNode[int]); ok {
 			for _, twig := range bn.twigs {
 				walk(twig)
 			}
@@ -300,7 +300,7 @@ func Test_ModelDirect(t *testing.T) {
 			maxTwigs, maxDepth := 0, 0
 			for seed := range kg.seeds {
 				r := rand.New(rand.NewSource(int64(seed)))
-				tr, m := New(), trieModel{}
+				tr, m := New[int](), trieModel{}
 				for step := range checks {
 					tag := fmt.Sprintf("seed %d step %d", seed, step)
 					applyRandomOps(t, tag, r, tr, m, kg.gen, kg.ops/checks)
@@ -320,7 +320,7 @@ func Test_ModelDirect(t *testing.T) {
 }
 
 type trieVersion struct {
-	tr *Trie
+	tr *Trie[int]
 	m  trieModel
 }
 
@@ -337,7 +337,7 @@ func Test_ModelCow(t *testing.T) {
 		t.Run(kg.name, func(t *testing.T) {
 			for seed := range kg.seeds {
 				r := rand.New(rand.NewSource(int64(seed)))
-				cur := trieVersion{New(), trieModel{}}
+				cur := trieVersion{New[int](), trieModel{}}
 				applyRandomOps(t, fmt.Sprintf("seed %d build", seed), r, cur.tr, cur.m, kg.gen, kg.ops)
 
 				var old []trieVersion
@@ -384,7 +384,7 @@ func Test_ModelDirectAndTxn(t *testing.T) {
 	kg := modelKeyGens[0]
 	for seed := range kg.seeds {
 		r := rand.New(rand.NewSource(int64(seed)))
-		tr, m := New(), trieModel{}
+		tr, m := New[int](), trieModel{}
 		for round := range rounds {
 			tag := fmt.Sprintf("seed %d round %d", seed, round)
 			if r.Intn(2) == 0 {
@@ -418,10 +418,10 @@ func Fuzz_Ops(f *testing.F) {
 	f.Add([]byte("\x06\x00-\x00\x02a\x00b\x00\x01a\x00\x04\x02a\x00b\x06\x00-\x06\x00-\x04\x01a\x00"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		cur := trieVersion{New(), trieModel{}}
+		cur := trieVersion{New[int](), trieModel{}}
 		var (
 			old   []trieVersion
-			tx    *Txn
+			tx    *Txn[int]
 			txM   trieModel
 			probe [][]byte
 		)

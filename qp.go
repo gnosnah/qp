@@ -12,14 +12,14 @@ type nibbleIndexT = uint16 // nibble index type
 // OnInsertValFn is a function type that processes a new value before insertion.
 // It takes the new value as input and returns the final value to be used.
 // It must not modify the trie or transaction that calls it.
-type OnInsertValFn = func(newVal any) (finalVal any)
+type OnInsertValFn[V any] = func(newVal V) (finalVal V)
 
-// OnUpdateValFn is a function type that takes two parameters of type any (newVal and oldVal)
-// and returns a finalVal of type any. It is used to handle value updates by comparing
+// OnUpdateValFn is a function type that takes two parameters of type V (newVal and oldVal)
+// and returns a finalVal of type V. It is used to handle value updates by comparing
 // the new and old values and determining the final value to be used.
 // It must not modify the trie or transaction that calls it, and it
 // must return a new value instead of changing oldVal in place.
-type OnUpdateValFn = func(newVal, oldVal any) (finalVal any)
+type OnUpdateValFn[V any] = func(newVal, oldVal V) (finalVal V)
 
 const (
 	nibbleIndexMax = math.MaxUint16
@@ -36,69 +36,71 @@ var (
 	errBadNode = fmt.Errorf("internal error: nil node, the trie is corrupted")
 )
 
-var (
-	// default newVal is finalVal
-	defaultOnInsert = func(newVal any) any { return newVal }
-	defaultOnUpdate = func(newVal, oldVal any) any { return newVal }
-)
+// default newVal is finalVal
+func defaultOnInsert[V any](newVal V) V { return newVal }
 
-type Option func(*Trie)
+func defaultOnUpdate[V any](newVal, oldVal V) V { return newVal }
 
-func WithOnInsert(f OnInsertValFn) Option {
-	return func(tr *Trie) {
+type Option[V any] func(*Trie[V])
+
+func WithOnInsert[V any](f OnInsertValFn[V]) Option[V] {
+	return func(tr *Trie[V]) {
 		tr.onInsert = f
 	}
 }
 
-func WithOnUpdate(f OnUpdateValFn) Option {
-	return func(tr *Trie) {
+func WithOnUpdate[V any](f OnUpdateValFn[V]) Option[V] {
+	return func(tr *Trie[V]) {
 		tr.onUpdate = f
 	}
 }
 
-// Trie is a qp-trie that maps byte-string keys to values.
+// Trie is a qp-trie that maps byte-string keys to values of type V.
 // Create one with New. The zero value is not usable.
-type Trie struct {
-	root     trieNode
+type Trie[V any] struct {
+	root     trieNode[V]
 	size     int
-	onInsert OnInsertValFn
-	onUpdate OnUpdateValFn
+	onInsert OnInsertValFn[V]
+	onUpdate OnUpdateValFn[V]
 }
 
 // New creates and initializes a new Trie with the given options.
 // If no onInsert or onUpdate handlers are provided, default handlers will be used.
-// default onInsert: func(newVal any) any { return newVal }
-// default onUpdate: func(newVal, oldVal any) any { return newVal }
-func New(opts ...Option) *Trie {
-	var tr Trie
+// default onInsert: func(newVal V) V { return newVal }
+// default onUpdate: func(newVal, oldVal V) V { return newVal }
+//
+// The value type cannot be inferred without options, so it is given
+// explicitly: New[int](). With options it is inferred from the handlers.
+func New[V any](opts ...Option[V]) *Trie[V] {
+	var tr Trie[V]
 	for _, opt := range opts {
 		opt(&tr)
 	}
 	if tr.onInsert == nil {
-		tr.onInsert = defaultOnInsert
+		tr.onInsert = defaultOnInsert[V]
 	}
 	if tr.onUpdate == nil {
-		tr.onUpdate = defaultOnUpdate
+		tr.onUpdate = defaultOnUpdate[V]
 	}
 	return &tr
 }
 
 // Size returns the total number of key-value pairs stored in the trie.
-func (tr *Trie) Size() int {
+func (tr *Trie[V]) Size() int {
 	return tr.size
 }
 
-func (tr *Trie) findMatch(key []byte, exactMatch bool) *leafNode {
+func (tr *Trie[V]) findMatch(key []byte, exactMatch bool) *leafNode[V] {
 	if tr.root == nil {
 		return nil
 	}
-	var bn *branchNode
+	var bn *branchNode[V]
 	ptr := &tr.root
 	for {
 		switch n := (*ptr).(type) {
-		case *leafNode:
+		case *leafNode[V]:
 			return n
-		case *branchNode:
+		case *branchNode[V]:
 			bn = n
 			i := 0
 			b := bn.twigBit(key)
@@ -116,13 +118,13 @@ func (tr *Trie) findMatch(key []byte, exactMatch bool) *leafNode {
 	}
 }
 
-func (tr *Trie) findInsert(key []byte, index nibbleIndexT) (ptr *trieNode, grow bool) {
+func (tr *Trie[V]) findInsert(key []byte, index nibbleIndexT) (ptr *trieNode[V], grow bool) {
 	ptr = &tr.root
 	for {
 		switch n := (*ptr).(type) {
-		case *leafNode:
+		case *leafNode[V]:
 			return ptr, false
-		case *branchNode:
+		case *branchNode[V]:
 			if index == n.index {
 				return ptr, true
 			}
@@ -142,7 +144,7 @@ func (tr *Trie) findInsert(key []byte, index nibbleIndexT) (ptr *trieNode, grow 
 	}
 }
 
-func (tr *Trie) findDelete(key []byte) (parentBranch *trieNode, leaf *leafNode, b bitmapT) {
+func (tr *Trie[V]) findDelete(key []byte) (parentBranch *trieNode[V], leaf *leafNode[V], b bitmapT) {
 	if tr.root == nil {
 		return nil, nil, 0
 	}
@@ -150,9 +152,9 @@ func (tr *Trie) findDelete(key []byte) (parentBranch *trieNode, leaf *leafNode, 
 	ptr := &tr.root
 	for {
 		switch n := (*ptr).(type) {
-		case *leafNode:
+		case *leafNode[V]:
 			return parentBranch, n, b
-		case *branchNode:
+		case *branchNode[V]:
 			b = n.twigBit(key)
 			if !n.hasTwig(b) {
 				return nil, nil, 0
@@ -168,26 +170,29 @@ func (tr *Trie) findDelete(key []byte) (parentBranch *trieNode, leaf *leafNode, 
 
 // Get retrieves the value associated with the given key from the trie.
 // It returns the value and a boolean indicating whether the key was found.
-// If the key is not present in the trie, it returns nil and false.
-func (tr *Trie) Get(key []byte) (val any, found bool) {
+// If the key is not present in the trie, it returns the zero value of V and false.
+func (tr *Trie[V]) Get(key []byte) (val V, found bool) {
 	must(key)
+	var zero V
 	leaf := tr.findMatch(key, true)
 	if leaf != nil && bytes.Equal(key, leaf.key) {
 		return leaf.value, true
 	}
-	return nil, false
+	return zero, false
 }
 
 // Upsert inserts or updates a key-value pair in the trie.
 // If the key already exists, it updates the value and returns the old value with isUpdate=true.
-// If the key does not exist, it inserts the new key-value pair and returns nil with isUpdate=false.
-func (tr *Trie) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
+// If the key does not exist, it inserts the new key-value pair and returns the
+// zero value of V with isUpdate=false.
+func (tr *Trie[V]) Upsert(key []byte, value V) (oldVal V, isUpdate bool) {
 	must(key)
+	var zero V
 
 	if tr.root == nil {
 		tr.root = newLeafNode(key, tr.onInsert(value))
 		tr.size++
-		return nil, false
+		return zero, false
 	}
 
 	leaf := tr.findMatch(key, false)
@@ -201,7 +206,7 @@ func (tr *Trie) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	newLeaf := newLeafNode(key, tr.onInsert(value))
 	ptr, grow := tr.findInsert(key, index)
 	if grow {
-		bn := (*ptr).(*branchNode)
+		bn := (*ptr).(*branchNode[V])
 		bn.growTwigs(index, key, newLeaf)
 	} else {
 		bn := newBranchNode(*ptr, index, leaf.key, key, newLeaf)
@@ -209,19 +214,20 @@ func (tr *Trie) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	}
 
 	tr.size++
-	return nil, false
+	return zero, false
 }
 
 // Delete removes the entry for the given key from the trie.
 // It returns the value that was associated with the key and a boolean indicating
 // whether the key was present in the trie.
-// If the key is not found, it returns nil and false.
-func (tr *Trie) Delete(key []byte) (oldVal any, found bool) {
+// If the key is not found, it returns the zero value of V and false.
+func (tr *Trie[V]) Delete(key []byte) (oldVal V, found bool) {
 	must(key)
+	var zero V
 
 	parentBn, leaf, b := tr.findDelete(key)
 	if leaf == nil || !bytes.Equal(key, leaf.key) {
-		return nil, false
+		return zero, false
 	}
 	tr.size--
 	if parentBn == nil {
@@ -230,7 +236,7 @@ func (tr *Trie) Delete(key []byte) (oldVal any, found bool) {
 		return leaf.value, true
 	}
 
-	bn := (*parentBn).(*branchNode)
+	bn := (*parentBn).(*branchNode[V])
 	if bn.twigOffsetMax() == 2 {
 		other := 0
 		if bn.twigOffset(b) == 0 {
@@ -246,15 +252,15 @@ func (tr *Trie) Delete(key []byte) (oldVal any, found bool) {
 	return leaf.value, true
 }
 
-func (tr *Trie) findPrev(index nibbleIndexT, key []byte) (prev *trieNode, cur *trieNode, needCheckCur bool) {
+func (tr *Trie[V]) findPrev(index nibbleIndexT, key []byte) (prev *trieNode[V], cur *trieNode[V], needCheckCur bool) {
 	cur = &tr.root
 	for {
 		switch n := (*cur).(type) {
-		case *leafNode:
+		case *leafNode[V]:
 			needCheckCur = true
 			return
-		case *branchNode:
-			bn := (*cur).(*branchNode)
+		case *branchNode[V]:
+			bn := (*cur).(*branchNode[V])
 			if index < bn.index {
 				needCheckCur = true
 				return
@@ -274,15 +280,15 @@ func (tr *Trie) findPrev(index nibbleIndexT, key []byte) (prev *trieNode, cur *t
 	}
 }
 
-func (tr *Trie) lastLeaf(node *trieNode) *leafNode {
+func (tr *Trie[V]) lastLeaf(node *trieNode[V]) *leafNode[V] {
 	ptr := node
 	for {
 		switch n := (*ptr).(type) {
-		case *leafNode:
-			leaf := (*ptr).(*leafNode)
+		case *leafNode[V]:
+			leaf := (*ptr).(*leafNode[V])
 			return leaf
-		case *branchNode:
-			bn := (*ptr).(*branchNode)
+		case *branchNode[V]:
+			bn := (*ptr).(*branchNode[V])
 			offsetMax := bn.twigOffsetMax()
 			ptr = n.twig(offsetMax - 1)
 		default:
@@ -292,19 +298,21 @@ func (tr *Trie) lastLeaf(node *trieNode) *leafNode {
 }
 
 // GetLessOrEqual returns the key-value pair with the largest key that is less than or equal to
-// the given key. It returns the key, value, and a boolean indicating whether an exact match was found.
-// If no such key exists, it returns nil, nil, false.
+// the given key. found reports whether such a key exists, and exactMatch reports whether it
+// equals the given key.
+// If no such key exists, it returns a nil key, the zero value of V, false, and false.
 // The returned key should not be modified by the caller.
-func (tr *Trie) GetLessOrEqual(key []byte) (k []byte, v any, exactMatch bool) {
+func (tr *Trie[V]) GetLessOrEqual(key []byte) (k []byte, v V, exactMatch bool, found bool) {
 	must(key)
+	var zero V
 
 	if tr.root == nil {
-		return nil, nil, false
+		return nil, zero, false, false
 	}
 
 	leaf := tr.findMatch(key, false)
 	if leaf != nil && bytes.Equal(key, leaf.key) {
-		return key, leaf.value, true
+		return key, leaf.value, true, true
 	}
 
 	index, match := nibbleIndex(key, leaf.key)
@@ -318,15 +326,15 @@ func (tr *Trie) GetLessOrEqual(key []byte) (k []byte, v any, exactMatch bool) {
 		b2 := nibbleBit(index, leaf.key)
 		if b1 > b2 {
 			leaf = tr.lastLeaf(cur)
-			return leaf.key, leaf.value, false
+			return leaf.key, leaf.value, false, true
 		}
 	}
 
 	if prev == nil {
-		return nil, nil, false
+		return nil, zero, false, false
 	}
 	leaf = tr.lastLeaf(prev)
-	return leaf.key, leaf.value, false
+	return leaf.key, leaf.value, false, true
 }
 
 func must(key []byte) {
