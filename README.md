@@ -105,8 +105,34 @@ Notes:
 - `Commit` and `Abort` are mutually exclusive, and each may be called only once. Do not use the `Txn` after either call (`Get`, `Upsert`, `Delete`, `OldTrie`, `NewTrie`). Keep using the returned `*Trie`.
 - Do not modify the trie directly while a transaction is open.
 - A transaction shares unmodified nodes with the original trie, `OldTrie()`, `NewTrie()`, and the trie returned by `Commit` or `Abort`. Those tries may be read together. While any of them is still in use, modify the data only through a new `Txn()`. `Trie.Upsert` and `Trie.Delete` are safe only after every other reference has been dropped.
-- Do not run concurrent transactions on the same trie.
+- Only one transaction may be open at a time. This covers the trie and every version that shares nodes with it: the original trie, `OldTrie()`, `NewTrie()`, and any trie returned by an earlier `Commit` or `Abort`. Finish the open transaction before calling `Txn()` on any of them, including an older version that is still being read.
 - Do not start a nested transaction from `tx.NewTrie()`.
+- Values are not copied. A stored value is shared by every version that still holds its key, so treat stored values as immutable. To change a value, `Upsert` a new one. An `onUpdate` handler must return a new value and must not modify `oldVal` in place.
+- Keys returned by `Iterator.Next`, `Walk`, and `GetLessOrEqual` belong to the trie and are shared between versions. Do not modify them.
+
+### concurrency
+
+A trie has no internal locking. The supported model is one writer and any number of readers.
+
+- Any number of goroutines may read a trie at the same time (`Get`, `GetLessOrEqual`, `Iterator`, `Walk`, `Size`). They may keep reading it while a transaction on it is open and after a newer version has been committed.
+- All writes must come from one goroutine at a time: `Txn`, `Txn.Upsert`, `Txn.Delete`, `Commit`, `Abort`, `Trie.Upsert`, `Trie.Delete`.
+- Hand the trie returned by `Commit` to readers through a synchronized handoff such as `atomic.Pointer`. Do not share `tx.NewTrie()` with other goroutines before `Commit`.
+- `Trie.Upsert` and `Trie.Delete` modify nodes in place. Once readers exist, change the data only through `Txn()`.
+
+```go
+	var zone atomic.Pointer[qp.Trie]
+	zone.Store(qp.New())
+
+	// readers, any goroutine
+	tr := zone.Load()
+	val, found := tr.Get([]byte("a"))
+	fmt.Printf("Get a, val: %v, found: %t \n", val, found)
+
+	// the single writer
+	tx := zone.Load().Txn()
+	tx.Upsert([]byte("a"), 1)
+	zone.Store(tx.Commit())
+```
 
 ### customize
 
@@ -216,7 +242,10 @@ qp     10000000  1284      5793        2142     1498       1598            1619
 
 ## Limits
 
-The key must not be nil and must not exceed 32767 bytes.
+- The key must not be empty (nil or zero length) and must not exceed 32767 bytes. `Get`, `Upsert`, and `Delete` (on both `Trie` and `Txn`) and `GetLessOrEqual` panic on such a key.
+- Create a trie with `qp.New()`. The zero value `qp.Trie{}` is not usable.
+- An iterator is valid only while its trie is not modified. `Trie.Upsert` and `Trie.Delete` on that trie invalidate it, and so do `Txn.Upsert` and `Txn.Delete` for an iterator over `tx.NewTrie()`. Afterwards `Next` may repeat keys, skip keys, or panic. A transaction does not modify the trie it was started from, so an iterator over that trie stays valid.
+- `onInsert` and `onUpdate` handlers and the `Walk` filter must not modify the trie or transaction that calls them.
 
 ## Reference
 - https://github.com/fanf2/qp
