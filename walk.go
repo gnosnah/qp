@@ -1,23 +1,23 @@
 package qp
 
-type WalkFn = func(key []byte, val any) (add bool)
+type WalkFn[V any] = func(key []byte, val V) (add bool)
 
-var defaultWalkFn = func(key []byte, val any) (add bool) {
+func defaultWalkFn[V any](key []byte, val V) (add bool) {
 	return true
 }
 
 // KVPair is a key-value pair.
-type KVPair struct {
+type KVPair[V any] struct {
 	Key   []byte
-	Value any
+	Value V
 }
 
 // Walk traverses the entire trie and applies the given function to each element's key
 // and value. If the function returns true, the corresponding key-value pair is included in the result.
 // The function must not modify the trie.
-func (tr *Trie) Walk(max int, f WalkFn) (pairs []KVPair) {
+func (tr *Trie[V]) Walk(max int, f WalkFn[V]) (pairs []KVPair[V]) {
 	if f == nil {
-		f = defaultWalkFn
+		f = defaultWalkFn[V]
 	}
 	it := tr.Iterator()
 	for len(pairs) < max {
@@ -26,7 +26,7 @@ func (tr *Trie) Walk(max int, f WalkFn) (pairs []KVPair) {
 			break
 		}
 		if add := f(k, v); add {
-			pairs = append(pairs, KVPair{Key: k, Value: v})
+			pairs = append(pairs, KVPair[V]{Key: k, Value: v})
 		}
 	}
 	return

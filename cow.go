@@ -2,9 +2,9 @@ package qp
 
 import "bytes"
 
-type Txn struct {
-	oldTr *Trie
-	newTr *Trie
+type Txn[V any] struct {
+	oldTr *Trie[V]
+	newTr *Trie[V]
 }
 
 // Txn creates a new transaction for the Trie. It returns a transaction object
@@ -19,9 +19,9 @@ type Txn struct {
 // Other goroutines may keep reading the original trie while the transaction
 // is open. Values are not copied: a stored value is shared by every version
 // that holds its key and must be treated as immutable.
-func (tr *Trie) Txn() *Txn {
-	var tx Txn
-	tx.newTr = &Trie{
+func (tr *Trie[V]) Txn() *Txn[V] {
+	var tx Txn[V]
+	tx.newTr = &Trie[V]{
 		root:     tr.root,
 		size:     tr.size,
 		onInsert: tr.onInsert,
@@ -35,17 +35,17 @@ func (tr *Trie) Txn() *Txn {
 	return &tx
 }
 
-func (tx *Txn) OldTrie() *Trie {
+func (tx *Txn[V]) OldTrie() *Trie[V] {
 	return tx.oldTr
 }
 
-func (tx *Txn) NewTrie() *Trie {
+func (tx *Txn[V]) NewTrie() *Trie[V] {
 	return tx.newTr
 }
 
 // Commit finalizes the transaction by setting the old trie to the new trie
 // and clearing the new trie reference. Returns the committed trie.
-func (tx *Txn) Commit() *Trie {
+func (tx *Txn[V]) Commit() *Trie[V] {
 	tx.oldTr = tx.newTr
 	tx.newTr = nil
 	return tx.oldTr
@@ -53,28 +53,31 @@ func (tx *Txn) Commit() *Trie {
 
 // Abort cancels the transaction and returns the original trie state.
 // Any changes made during the transaction will be discarded.
-func (tx *Txn) Abort() *Trie {
+func (tx *Txn[V]) Abort() *Trie[V] {
 	tx.newTr = nil
 	return tx.oldTr
 }
 
 // Get retrieves a value associated with the given key from the transaction.
 // It returns the value and a boolean indicating whether the key was found.
-func (tx *Txn) Get(key []byte) (val any, found bool) {
+// If the key is not present, it returns the zero value of V and false.
+func (tx *Txn[V]) Get(key []byte) (val V, found bool) {
 	return tx.newTr.Get(key)
 }
 
 // Upsert inserts a new key-value pair or updates an existing one in the transaction.
 // It returns the old value if the key existed (update case) and a boolean indicating
-// whether it was an update operation. For new insertions, it returns nil and false.
+// whether it was an update operation. For new insertions, it returns the zero
+// value of V and false.
 // The key must not be empty.
-func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
+func (tx *Txn[V]) Upsert(key []byte, value V) (oldVal V, isUpdate bool) {
 	must(key)
+	var zero V
 
 	if tx.newTr.root == nil {
 		tx.newTr.root = newLeafNode(key, tx.newTr.onInsert(value))
 		tx.newTr.size++
-		return nil, false
+		return zero, false
 	}
 
 	leaf := tx.newTr.findMatch(key, false)
@@ -84,14 +87,14 @@ func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	}
 	ptr, growBranch := tx.findInsert(key, index, exactMatch)
 	if exactMatch {
-		lf := (*ptr).(*leafNode)
+		lf := (*ptr).(*leafNode[V])
 		lf.value = tx.newTr.onUpdate(value, oldVal)
 		return oldVal, true
 	}
 
 	newLeaf := newLeafNode(key, tx.newTr.onInsert(value))
 	if growBranch {
-		bn := (*ptr).(*branchNode)
+		bn := (*ptr).(*branchNode[V])
 		bn.growTwigs(index, key, newLeaf)
 	} else {
 		bn := newBranchNode(*ptr, index, leaf.key, key, newLeaf)
@@ -99,28 +102,28 @@ func (tx *Txn) Upsert(key []byte, value any) (oldVal any, isUpdate bool) {
 	}
 
 	tx.newTr.size++
-	return nil, false
+	return zero, false
 }
 
 // findInsert and findDelete copy every cow-marked node on the way down and
 // continue in the copy. The mark on the original node is left set: that node
 // still belongs to the other versions, so it must never look writable again.
-func (tx *Txn) findInsert(key []byte, index nibbleIndexT, exactMatch bool) (ptr *trieNode, growBranch bool) {
+func (tx *Txn[V]) findInsert(key []byte, index nibbleIndexT, exactMatch bool) (ptr *trieNode[V], growBranch bool) {
 	ptr = &tx.newTr.root
 	for {
 		switch n := (*ptr).(type) {
-		case *leafNode:
+		case *leafNode[V]:
 			if n.cowMarked() {
 				newLf := n.dup()
 				*ptr = newLf
 			}
 			return ptr, false
-		case *branchNode:
+		case *branchNode[V]:
 			if n.cowMarked() {
 				n.markTwigs()
 				newBn := n.dup()
 				*ptr = newBn
-				n = newBn.(*branchNode)
+				n = newBn.(*branchNode[V])
 			}
 			if !exactMatch {
 				if index == n.index {
@@ -143,22 +146,22 @@ func (tx *Txn) findInsert(key []byte, index nibbleIndexT, exactMatch bool) (ptr 
 	}
 }
 
-func (tx *Txn) findDelete(key []byte) (parentBn *trieNode, leaf *leafNode, b bitmapT) {
+func (tx *Txn[V]) findDelete(key []byte) (parentBn *trieNode[V], leaf *leafNode[V], b bitmapT) {
 	ptr := &tx.newTr.root
 	for {
 		switch n := (*ptr).(type) {
-		case *leafNode:
+		case *leafNode[V]:
 			if n.cowMarked() {
 				newLf := n.dup()
 				*ptr = newLf
 			}
 			return parentBn, n, b
-		case *branchNode:
+		case *branchNode[V]:
 			if n.cowMarked() {
 				n.markTwigs()
 				newBn := n.dup()
 				*ptr = newBn
-				n = newBn.(*branchNode)
+				n = newBn.(*branchNode[V])
 			}
 			b = n.twigBit(key)
 			if !n.hasTwig(b) {
@@ -174,18 +177,20 @@ func (tx *Txn) findDelete(key []byte) (parentBn *trieNode, leaf *leafNode, b bit
 }
 
 // Delete removes the entry for the given key from the transaction.
-// It returns the old value and true if the key was present, or nil and false if not found.
+// It returns the old value and true if the key was present, or the zero value
+// of V and false if not found.
 // The key must not be empty.
-func (tx *Txn) Delete(key []byte) (oldVal any, found bool) {
+func (tx *Txn[V]) Delete(key []byte) (oldVal V, found bool) {
 	must(key)
+	var zero V
 
 	if tx.newTr.root == nil {
-		return nil, false
+		return zero, false
 	}
 
 	parentBn, leaf, b := tx.findDelete(key)
 	if leaf == nil || !bytes.Equal(key, leaf.key) {
-		return nil, false
+		return zero, false
 	}
 	tx.newTr.size--
 	if parentBn == nil {
@@ -193,7 +198,7 @@ func (tx *Txn) Delete(key []byte) (oldVal any, found bool) {
 		return leaf.value, true
 	}
 
-	bn := (*parentBn).(*branchNode)
+	bn := (*parentBn).(*branchNode[V])
 	if bn.twigOffsetMax() == 2 {
 		other := 0
 		if bn.twigOffset(b) == 0 {
