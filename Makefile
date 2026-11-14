@@ -5,7 +5,10 @@ lint:
 	golangci-lint run ./...
 
 test:
-	go test -v ./...
+	go test -race -v ./...
+
+fuzz:
+	go test -run '^$$' -fuzz Fuzz_Ops -fuzztime 60s .
 
 bench:
 	go test -bench .
