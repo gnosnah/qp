@@ -106,7 +106,7 @@ When a key is not found, the returned value is the zero value of `V` (`nil` for 
 Notes:
 
 - Assign the return value: `tr = tx.Commit()` or `tr = tx.Abort()`.
-- `Commit` and `Abort` are mutually exclusive, and each may be called only once. Do not use the `Txn` after either call (`Get`, `Upsert`, `Delete`, `OldTrie`, `NewTrie`). Keep using the returned `*Trie`.
+- `Commit` and `Abort` are mutually exclusive, and each may be called only once. After either call, every method on that `Txn` (including `Commit`, `Abort`, `Get`, `Upsert`, `Delete`, `OldTrie`, and `NewTrie`) panics with `transaction is not open`. Keep using the returned `*Trie`.
 - Do not modify the trie directly while a transaction is open.
 - A transaction shares unmodified nodes with the original trie, `OldTrie()`, `NewTrie()`, and the trie returned by `Commit` or `Abort`. Those tries may be read together. While any of them is still in use, modify the data only through a new `Txn()`. `Trie.Upsert` and `Trie.Delete` are safe only after every other reference has been dropped.
 - Only one transaction may be open at a time. This covers the trie and every version that shares nodes with it: the original trie, `OldTrie()`, `NewTrie()`, and any trie returned by an earlier `Commit` or `Abort`. Finish the open transaction before calling `Txn()` on any of them, including an older version that is still being read.
