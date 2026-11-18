@@ -2,6 +2,9 @@ package qp
 
 const initIterStackSize = 256
 
+// Iterator traverses a trie in lexicographical order. Create one with Trie.Iterator.
+// An Iterator must not be copied by value after initialization; pass *Iterator
+// instead. Call Trie.Iterator again to create an independent iterator.
 type Iterator[V any] struct {
 	tr    *Trie[V]
 	stack []*trieNode[V]
