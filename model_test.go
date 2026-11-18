@@ -324,6 +324,53 @@ type trieVersion struct {
 	m  trieModel
 }
 
+// Branch from arbitrary saved versions with one transaction open at a time.
+// Keep committed versions and working tries saved before Abort: neither may
+// change when a later transaction starts from another version sharing nodes.
+func Test_ModelCowHistoricalBranches(t *testing.T) {
+	const (
+		rounds = 24
+		ops    = 12
+	)
+	for _, kg := range modelKeyGens {
+		t.Run(kg.name, func(t *testing.T) {
+			for seed := range min(kg.seeds, 6) {
+				r := rand.New(rand.NewSource(int64(seed + 13000)))
+				base := trieVersion{New[int](), trieModel{}}
+				applyRandomOps(t, "build", r, base.tr, base.m, kg.gen, 150)
+				versions := []trieVersion{base}
+				for round := range rounds {
+					src := versions[r.Intn(len(versions))]
+					tx := src.tr.Txn()
+					m := src.m.clone()
+					tag := fmt.Sprintf("seed %d round %d", seed, round)
+					for step := range ops {
+						stepTag := fmt.Sprintf("%s step %d", tag, step)
+						applyRandomOps(t, stepTag, r, tx, m, kg.gen, 1)
+						checkModel(t, stepTag+" writer", tx.NewTrie(), m, nil)
+						checkModel(t, stepTag+" base", src.tr, src.m, nil)
+					}
+					working := tx.NewTrie()
+					for i, v := range versions {
+						checkCowFrontier(t, fmt.Sprintf("%s saved %d", tag, i), working, v.tr)
+					}
+					if round%3 == 0 {
+						if got := tx.Abort(); got != src.tr {
+							t.Fatalf("%s: Abort did not return the base trie", tag)
+						}
+					} else if got := tx.Commit(); got != working {
+						t.Fatalf("%s: Commit did not return the working trie", tag)
+					}
+					versions = append(versions, trieVersion{working, m})
+					for i, v := range versions {
+						checkModel(t, fmt.Sprintf("%s saved %d", tag, i), v.tr, v.m, randomKeys(r, kg.gen, 4))
+					}
+				}
+			}
+		})
+	}
+}
+
 // Test_ModelCow runs one transaction after another, the way a single writer
 // does, and keeps the last few committed versions the way readers do. After
 // every commit or abort each kept version must still match its own model.
