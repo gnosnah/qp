@@ -1,15 +1,29 @@
 package qp
 
-import "bytes"
+import (
+	"bytes"
+	"errors"
+)
 
+var errTxnClosed = errors.New("transaction is not open")
+
+// Txn provides copy-on-write updates to a trie. Create one with Trie.Txn;
+// the zero value is not usable. Commit or Abort ends the transaction, after
+// which every method panics with "transaction is not open".
 type Txn[V any] struct {
 	oldTr *Trie[V]
 	newTr *Trie[V]
 }
 
+func (tx *Txn[V]) mustOpen() {
+	if tx == nil || tx.newTr == nil {
+		panic(errTxnClosed)
+	}
+}
+
 // Txn creates a new transaction for the Trie. It returns a transaction object
 // that provides copy-on-write functionality for modifying the trie. The original
-// trie remains unchanged until the transaction is committed.
+// trie remains unchanged; Commit returns a new trie with the updates.
 //
 // A trie must not be modified directly while a transaction is open. Only one
 // transaction may be open at a time across this trie and every version that
@@ -35,33 +49,44 @@ func (tr *Trie[V]) Txn() *Txn[V] {
 	return &tx
 }
 
+// OldTrie returns the original trie while the transaction is open.
 func (tx *Txn[V]) OldTrie() *Trie[V] {
+	tx.mustOpen()
 	return tx.oldTr
 }
 
+// NewTrie returns the transaction's working trie while it is open.
+// Modify it through Txn.Upsert and Txn.Delete to preserve the original trie.
 func (tx *Txn[V]) NewTrie() *Trie[V] {
+	tx.mustOpen()
 	return tx.newTr
 }
 
-// Commit finalizes the transaction by setting the old trie to the new trie
-// and clearing the new trie reference. Returns the committed trie.
+// Commit ends the transaction and returns the new trie. The original trie
+// remains unchanged. Assign the returned trie to keep the updates.
+// All subsequent calls on this transaction panic.
 func (tx *Txn[V]) Commit() *Trie[V] {
-	tx.oldTr = tx.newTr
-	tx.newTr = nil
-	return tx.oldTr
+	tx.mustOpen()
+	tr := tx.newTr
+	tx.oldTr, tx.newTr = nil, nil
+	return tr
 }
 
 // Abort cancels the transaction and returns the original trie state.
 // Any changes made during the transaction will be discarded.
+// All subsequent calls on this transaction panic.
 func (tx *Txn[V]) Abort() *Trie[V] {
-	tx.newTr = nil
-	return tx.oldTr
+	tx.mustOpen()
+	tr := tx.oldTr
+	tx.oldTr, tx.newTr = nil, nil
+	return tr
 }
 
 // Get retrieves a value associated with the given key from the transaction.
 // It returns the value and a boolean indicating whether the key was found.
 // If the key is not present, it returns the zero value of V and false.
 func (tx *Txn[V]) Get(key []byte) (val V, found bool) {
+	tx.mustOpen()
 	return tx.newTr.Get(key)
 }
 
@@ -71,6 +96,7 @@ func (tx *Txn[V]) Get(key []byte) (val V, found bool) {
 // value of V and false.
 // The key must not be empty.
 func (tx *Txn[V]) Upsert(key []byte, value V) (oldVal V, isUpdate bool) {
+	tx.mustOpen()
 	must(key)
 	var zero V
 
@@ -181,6 +207,7 @@ func (tx *Txn[V]) findDelete(key []byte) (parentBn *trieNode[V], leaf *leafNode[
 // of V and false if not found.
 // The key must not be empty.
 func (tx *Txn[V]) Delete(key []byte) (oldVal V, found bool) {
+	tx.mustOpen()
 	must(key)
 	var zero V
 
