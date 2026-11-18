@@ -459,6 +459,29 @@ func Test_NilNodePanics(t *testing.T) {
 	}
 }
 
+func Test_GetLessOrEqualReturnedKeyDoesNotAliasQuery(t *testing.T) {
+	for _, query := range []string{"a", "b"} {
+		t.Run(query, func(t *testing.T) {
+			tr := New[int]()
+			tr.Upsert([]byte("a"), value1)
+			tr.Upsert([]byte("c"), value2)
+			buf := []byte(query)
+			key, val, exact, found := tr.GetLessOrEqual(buf)
+			if !found || string(key) != "a" || val != value1 || exact != (query == "a") {
+				t.Fatalf("GetLessOrEqual(%q) = %q, %v, %v, %v", query, key, val, exact, found)
+			}
+			// Reuse the caller-owned query buffer without touching the result.
+			buf[0] = 'z'
+			if string(key) != "a" {
+				t.Fatalf("reusing the query buffer changed the returned key to %q", key)
+			}
+			if val, found := tr.Get(key); !found || val != value1 {
+				t.Fatalf("Get(returned key) = %v, %v; want %v, true", val, found, value1)
+			}
+		})
+	}
+}
+
 func Test_GetLessOrEqual(t *testing.T) {
 	type expects struct {
 		searchK            string

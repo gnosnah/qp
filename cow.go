@@ -10,6 +10,8 @@ var errTxnClosed = errors.New("transaction is not open")
 // Txn provides copy-on-write updates to a trie. Create one with Trie.Txn;
 // the zero value is not usable. Commit or Abort ends the transaction, after
 // which every method panics with "transaction is not open".
+// A Txn must not be copied by value; pass the *Txn returned by Trie.Txn instead.
+// Copying that pointer aliases the same transaction and its closed state.
 type Txn[V any] struct {
 	oldTr *Trie[V]
 	newTr *Trie[V]

@@ -57,6 +57,8 @@ func WithOnUpdate[V any](f OnUpdateValFn[V]) Option[V] {
 
 // Trie is a qp-trie that maps byte-string keys to values of type V.
 // Create one with New. The zero value is not usable.
+// A Trie must not be copied by value after initialization; pass *Trie instead.
+// Use Txn to create a new version with copy-on-write updates.
 type Trie[V any] struct {
 	root     trieNode[V]
 	size     int
@@ -301,7 +303,8 @@ func (tr *Trie[V]) lastLeaf(node *trieNode[V]) *leafNode[V] {
 // the given key. found reports whether such a key exists, and exactMatch reports whether it
 // equals the given key.
 // If no such key exists, it returns a nil key, the zero value of V, false, and false.
-// The returned key should not be modified by the caller.
+// The returned key belongs to the trie and must not be modified by the caller.
+// A caller-owned query buffer may be reused after the call returns.
 func (tr *Trie[V]) GetLessOrEqual(key []byte) (k []byte, v V, exactMatch bool, found bool) {
 	must(key)
 	var zero V
@@ -312,7 +315,7 @@ func (tr *Trie[V]) GetLessOrEqual(key []byte) (k []byte, v V, exactMatch bool, f
 
 	leaf := tr.findMatch(key, false)
 	if leaf != nil && bytes.Equal(key, leaf.key) {
-		return key, leaf.value, true, true
+		return leaf.key, leaf.value, true, true
 	}
 
 	index, match := nibbleIndex(key, leaf.key)
