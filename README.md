@@ -23,6 +23,8 @@ go get -u github.com/gnosnah/qp
 
 When a key is not found, the returned value is the zero value of `V` (`nil` for a pointer type, `0` for `int`). Use the returned bool (`found`, `isUpdate`, `ok`) to tell a miss from a stored zero value.
 
+After creation, `Trie`, `Txn`, and `Iterator` must not be copied by value (for example, `copied := *tx` is unsupported). Pass their pointers instead. Copying a pointer, such as `alias := tx`, refers to the same object; committing or aborting through either pointer closes that transaction for both. Use `Txn()` to create a new trie version, and call `Iterator()` again for an independent iterator.
+
 - new/get/upsert/delete/size
 
 ```go
@@ -113,6 +115,7 @@ Notes:
 - Do not start a nested transaction from `tx.NewTrie()`.
 - Values are not copied. A stored value is shared by every version that still holds its key, so treat stored values as immutable. To change a value, `Upsert` a new one. An `onUpdate` handler must return a new value and must not modify `oldVal` in place.
 - Keys returned by `Iterator.Next`, `Walk`, and `GetLessOrEqual` belong to the trie and are shared between versions. Do not modify them.
+- `GetLessOrEqual` does not retain the query key. After the call returns, the caller may reuse its query buffer without changing the returned key. If the query is itself a key obtained from the trie, it must remain immutable under the rule above.
 
 ### concurrency
 
