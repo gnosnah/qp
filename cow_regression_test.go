@@ -128,7 +128,10 @@ func Test_CowGenericValues(t *testing.T) {
 			data [64]byte
 			name string
 		}
-		checkCowGenericValues(t, record{name: "a"}, record{name: "b"})
+		var a, b record
+		a.data[0], a.name = 1, "a"
+		b.data[0], b.name = 2, "b"
+		checkCowGenericValues(t, a, b)
 	})
 	t.Run("struct with references", func(t *testing.T) {
 		type record struct {

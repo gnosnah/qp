@@ -1,15 +1,26 @@
 # qp
 
-golang version of qp trie
+Go implementation of a [qp-trie](https://github.com/fanf2/qp) (quelques-bits
+popcount patricia trie): an ordered map from byte-string keys to values.
+
+A qp-trie is like a crit-bit / patricia trie, but each branch indexes a few bits
+at a time and compresses unused children with a popcount bitmap. This port uses
+4-bit (nibble) branches, supports arbitrary binary keys (including embedded
+NULs and proper prefixes), and adds copy-on-write transactions for cheap
+snapshots. It is inspired by [Tony Finch's qp](https://github.com/fanf2/qp) and
+the qp-trie used in [Knot DNS](https://gitlab.nic.cz/knot/knot-dns/-/tree/v3.3.3/src/contrib/qp-trie?ref_type=tags).
 
 ## Features
 
-- Fast Get, Upsert(insert/update)
-- Ordered iteration
-- Transaction(Copy-on-write)
-- Trie walk
+- Generic `Trie[V]` with `Get`, `Upsert`, and `Delete`
+- Ordered iteration and filtered `Walk`
+- Predecessor query via `GetLessOrEqual`
+- Copy-on-write transactions (`Txn`) for versioned updates
+- Inserted keys are copied; callers may reuse their buffers after `Upsert`
 
 ## Installation
+
+Requires Go 1.24 or later.
 
 ```bash
 go get -u github.com/gnosnah/qp
@@ -17,232 +28,116 @@ go get -u github.com/gnosnah/qp
 
 ## Usage
 
-### basic 
+Create with an explicit value type (`qp.New[int]()`), or let `WithOnInsert` /
+`WithOnUpdate` infer it. Misses return the zero value of `V` with
+`found == false`. Do not copy `Trie`, `Txn`, or `Iterator` by value after
+creation — pass pointers.
 
-`Trie[V]` stores values of one type `V`. Give the type to `New`: `qp.New[int]()`, `qp.New[*Record]()`. With `WithOnInsert` or `WithOnUpdate` it is inferred from the handler.
-
-When a key is not found, the returned value is the zero value of `V` (`nil` for a pointer type, `0` for `int`). Use the returned bool (`found`, `isUpdate`, `ok`) to tell a miss from a stored zero value.
-
-After creation, `Trie`, `Txn`, and `Iterator` must not be copied by value (for example, `copied := *tx` is unsupported). Pass their pointers instead. Copying a pointer, such as `alias := tx`, refers to the same object; committing or aborting through either pointer closes that transaction for both. Use `Txn()` to create a new trie version, and call `Iterator()` again for an independent iterator.
-
-- new/get/upsert/delete/size
+### Get, Upsert, Delete
 
 ```go
-	tr := qp.New[int]()
+tr := qp.New[int]()
+tr.Upsert([]byte("apple"), 1)
+tr.Upsert([]byte("apricot"), 2)
+tr.Upsert([]byte("banana"), 3)
 
-	keys := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
-	for _, key := range keys {
-		tr.Upsert([]byte(key), 1)
-	}
-
-	size := tr.Size()
-	fmt.Printf("after Upsert, trie size: %d \n", size)
-
-	val, found := tr.Get([]byte("a"))
-	fmt.Printf("Get a, val: %v, found: %t \n", val, found)
-
-	oldVal, found := tr.Delete([]byte("b"))
-	fmt.Printf("Delete b, val: %v, found: %t \n", oldVal, found)
-
-	size = tr.Size()
-	fmt.Printf("after Delete, trie size: %d \n", size)
+v, found := tr.Get([]byte("apple"))    // 1, true
+old, ok := tr.Delete([]byte("banana")) // 3, true
+n := tr.Size()                         // 2
 ```
 
-- iteration
-
-```go 
-	tr := qp.New[int]()
-	keys := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
-	for _, key := range keys {
-		tr.Upsert([]byte(key), 1)
-	}	
-	it := tr.Iterator()
-	for {
-		k, v, ok := it.Next()
-		if !ok {
-			break
-		}
-		fmt.Printf("key: %v, val: %v\n", k,v)
-	}
-
-```
-
-- walk
-
-``` go
-	tr := qp.New[int]()
-	keys := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
-	for _, key := range keys {
-		tr.Upsert([]byte(key), 1)
-	}	
-	max := math.MaxInt
-	result := tr.Walk(max, nil)
-	fmt.Printf("result: %v \n", result)
-
-```
-
-- transaction
+### Iteration, Walk, GetLessOrEqual
 
 ```go
-	tr := qp.New[int]()
-	keys := []string{"a", "b", "c", "f", "cef", "e", "cefy"}
-	for _, key := range keys {
-		tr.Upsert([]byte(key), 1)
+it := tr.Iterator()
+for {
+	k, v, ok := it.Next()
+	if !ok {
+		break
 	}
+	fmt.Println(string(k), v)
+}
 
-	tx := tr.Txn()
-	tx.Upsert([]byte("b"), 2)
-	tx.Upsert([]byte("x"), 3)
-	tx.Delete([]byte("a"))
-	// Call Commit or Abort once, and keep the returned trie.
-	// Do not use tx after this. Reassigning tr drops the previous trie,
-	// so later Upsert and Delete on tr are safe.
-	tr = tx.Commit() // or tx.Abort()
-	result := tr.Walk(10, nil)
-	for _, d := range result {
-		fmt.Printf("key: %s, value: %v \n", string(d.Key), d.Value)
-	}
+// Up to 10 pairs; nil filter accepts every key.
+pairs := tr.Walk(10, func(key []byte, val int) bool {
+	return bytes.HasPrefix(key, []byte("ap"))
+})
 
+k, v, exact, found := tr.GetLessOrEqual([]byte("apricot"))
+// k == "apricot", exact == true, found == true
 ```
 
-Notes:
+Keys from `Iterator.Next`, `Walk`, and `GetLessOrEqual` belong to the trie —
+do not modify them. `GetLessOrEqual` does not retain the query buffer.
 
-- Assign the return value: `tr = tx.Commit()` or `tr = tx.Abort()`.
-- `Commit` and `Abort` are mutually exclusive, and each may be called only once. After either call, every method on that `Txn` (including `Commit`, `Abort`, `Get`, `Upsert`, `Delete`, `OldTrie`, and `NewTrie`) panics with `transaction is not open`. Keep using the returned `*Trie`.
-- Do not modify the trie directly while a transaction is open.
-- A transaction shares unmodified nodes with the original trie, `OldTrie()`, `NewTrie()`, and the trie returned by `Commit` or `Abort`. Those tries may be read together. While any of them is still in use, modify the data only through a new `Txn()`. `Trie.Upsert` and `Trie.Delete` are safe only after every other reference has been dropped.
-- Only one transaction may be open at a time. This covers the trie and every version that shares nodes with it: the original trie, `OldTrie()`, `NewTrie()`, and any trie returned by an earlier `Commit` or `Abort`. Finish the open transaction before calling `Txn()` on any of them, including an older version that is still being read.
-- Do not start a nested transaction from `tx.NewTrie()`.
-- Values are not copied. A stored value is shared by every version that still holds its key, so treat stored values as immutable. To change a value, `Upsert` a new one. An `onUpdate` handler must return a new value and must not modify `oldVal` in place.
-- Keys returned by `Iterator.Next`, `Walk`, and `GetLessOrEqual` belong to the trie and are shared between versions. Do not modify them.
-- `GetLessOrEqual` does not retain the query key. After the call returns, the caller may reuse its query buffer without changing the returned key. If the query is itself a key obtained from the trie, it must remain immutable under the rule above.
-
-### concurrency
-
-A trie has no internal locking. The supported model is one writer and any number of readers.
-
-- Any number of goroutines may read a trie at the same time (`Get`, `GetLessOrEqual`, `Iterator`, `Walk`, `Size`). They may keep reading it while a transaction on it is open and after a newer version has been committed.
-- All writes must come from one goroutine at a time: `Txn`, `Txn.Upsert`, `Txn.Delete`, `Commit`, `Abort`, `Trie.Upsert`, `Trie.Delete`.
-- Hand the trie returned by `Commit` to readers through a synchronized handoff such as `atomic.Pointer`. Do not share `tx.NewTrie()` with other goroutines before `Commit`.
-- `Trie.Upsert` and `Trie.Delete` modify nodes in place. Once readers exist, change the data only through `Txn()`.
+### Transaction
 
 ```go
-	var zone atomic.Pointer[qp.Trie[int]]
-	zone.Store(qp.New[int]())
-
-	// readers, any goroutine
-	tr := zone.Load()
-	val, found := tr.Get([]byte("a"))
-	fmt.Printf("Get a, val: %v, found: %t \n", val, found)
-
-	// the single writer
-	tx := zone.Load().Txn()
-	tx.Upsert([]byte("a"), 1)
-	zone.Store(tx.Commit())
+tx := tr.Txn()
+tx.Upsert([]byte("cherry"), 4)
+tx.Delete([]byte("apple"))
+tr = tx.Commit() // or tx.Abort(); keep the returned *Trie
 ```
 
-### customize
+Rules:
 
-- onInsert
+- Assign `tr = tx.Commit()` or `tr = tx.Abort()`. Each may be called only once; afterwards every `Txn` method panics with `transaction is not open`.
+- Do not mutate a trie directly while a transaction on it is open, and do not open a nested `Txn` from `tx.NewTrie()`.
+- Only one transaction may be open at a time across a trie and every version that shares nodes with it (`OldTrie`, `NewTrie`, and earlier `Commit`/`Abort` results).
+- Shared versions may be read together. While any shared version is still live, write only through a new `Txn()`. `Trie.Upsert` / `Trie.Delete` are safe only after every other reference has been dropped.
+- Values are not copied across versions — treat stored values as immutable; `onUpdate` must return a new value, not mutate `oldVal`.
+
+### Concurrency
+
+No internal locking: one writer, any number of readers.
+
+- Readers may call `Get`, `GetLessOrEqual`, `Iterator`, `Walk`, and `Size` concurrently, including while a transaction is open or after a newer version is committed.
+- Writes (`Txn`, `Upsert`, `Delete`, `Commit`, `Abort`) must be single-threaded.
+- Publish `Commit`'s result with something like `atomic.Pointer`. Do not share `tx.NewTrie()` before `Commit`. Once readers exist, mutate only through `Txn()`.
 
 ```go
-	onInsert := func(newVal int) (finalVal int) {
-		return newVal * 10
-	}
-	tr := qp.New(qp.WithOnInsert(onInsert))	
-	for i := 1; i < 10; i++ {
-		key := fmt.Sprintf("%d", i)
-		val := i
-		tr.Upsert([]byte(string(key)), val)
-	}	
-	for i := 1; i < 10; i++ {
-		key := fmt.Sprintf("%d", i)
-		val, _ := tr.Get([]byte(string(key)))
-		fmt.Printf("key: %s, value: %v \n", string(key), val)
-	}
+var zone atomic.Pointer[qp.Trie[int]]
+zone.Store(qp.New[int]())
 
+tr := zone.Load()                // reader
+v, found := tr.Get([]byte("apple"))
+
+tx := zone.Load().Txn()          // single writer
+tx.Upsert([]byte("apple"), 1)
+zone.Store(tx.Commit())
 ```
 
-- onUpdate
+### Customize
 
 ```go
-	onUpdate := func(newVal, oldVal int) (finalVal int) {
-		return newVal + oldVal
-	}
-	tr := qp.New(qp.WithOnUpdate(onUpdate))	
-	for i := 1; i < 10; i++ {
-		key := fmt.Sprintf("%d", i)
-		val := i
-		tr.Upsert([]byte(string(key)), val)
-	}	
-	// update
-	for i := 1; i < 10; i++ {
-		key := fmt.Sprintf("%d", i)
-		val := i
-		tr.Upsert([]byte(string(key)), val)
-	}	
-	for i := 1; i < 10; i++ {
-		key := fmt.Sprintf("%d", i)
-		val, _ := tr.Get([]byte(string(key)))
-		fmt.Printf("key: %s, value: %v \n", string(key), val)
-	}
+tr := qp.New(qp.WithOnInsert(func(v int) int { return v * 10 }))
+tr.Upsert([]byte("a"), 3) // stores 30
 
-```
-
-- walk filter
-
-```go
-	tr := qp.New[int]()
-	kvs := []qp.KVPair[int]{
-		{Key: []byte("a"), Value: 1},
-		{Key: []byte("ab"), Value: 2},
-		{Key: []byte("b"), Value: 2},
-		{Key: []byte("c"), Value: 3},
-	}
-	for _, d := range kvs {
-		tr.Upsert([]byte(d.Key), d.Value)
-	}	
-	// Return up to 10 pairs.
-	max := 10
-	// only reuturn key with 'a' prefix and value > 2
-	f := func(key []byte, val int) bool {
-		return bytes.HasPrefix(key, []byte("a")) && val >= 2
-	}
-	result := tr.Walk(max, f)
-	fmt.Printf("result: %v \n", result)
-
+tr = qp.New(qp.WithOnUpdate(func(newVal, oldVal int) int { return newVal + oldVal }))
+tr.Upsert([]byte("a"), 1)
+tr.Upsert([]byte("a"), 2) // stores 3
 ```
 
 ## Benchmark
-Ran some rough performance tests on virtual machine(4c8g), and the results were pretty impressive.
 
-you can find benchmark tool [here](https://github.com/gnosnah/qp-bench)
+Compared with Go map, [Google B-tree](https://github.com/google/btree) `v1.0.0`,
+and [HashiCorp immutable radix](https://github.com/hashicorp/go-immutable-radix)
+`v2.1.0`, using 10,000 unique random 16-byte keys. Figures are medians of three
+100 ms runs on one CPU (Go 1.27.3, Xeon Platinum 8336C); lower is better.
 
-gomap: golang1.26.6 builtin map
+| Operation | QP | Go map | B-tree | Radix |
+|---|---:|---:|---:|---:|
+| Build, ns/key | 358.7 | 100.2 | 518.9 | 1,019.1 |
+| Get hit, ns/op | 75.82 | 26.70 | 378.0 | 260.5 |
+| Ordered scan, ns/key | 49.81 | 240.3 | 5.649 | 12.56 |
+| Snapshot update of 16 keys, us/op | 18.77 | 302.14 | 27.38 | 40.99 |
 
-```bash
-$ cat /proc/cpuinfo
-...
-cpu MHz         : 2249.998
-cache size      : 512 KB
-...
-
-❯ ./bench.sh 2
-benchmark iteration 1
-benchmark: gomap
-benchmark: qp
-Title  DataSize  Load(ms)  Insert(ms)  Get(ms)  Alloc(MB)  TotalAlloc(MB)  TotalSys(MB)
-gomap  10000000  1323      7557        5130     641        1281            1095
-qp     10000000  1150      6037        2333     1497       1598            1622
-benchmark iteration 2
-benchmark: gomap
-benchmark: qp
-Title  DataSize  Load(ms)  Insert(ms)  Get(ms)  Alloc(MB)  TotalAlloc(MB)  TotalSys(MB)
-gomap  10000000  1189      7030        4104     649        1281            1103
-qp     10000000  1284      5793        2142     1498       1598            1619
-
-```
-
+Go map led on build and lookup. QP looked up keys faster than B-tree and radix
+and led on snapshot updates. B-tree led on ordered scans. Map's scan sorts its
+keys, and its snapshot update clones the map. In a separate 100,000-key
+retained-heap test, QP used 101.86 B/key versus 50.95 B/key for map. B-tree and
+radix borrow input keys, so their memory use is not directly comparable with QP
+or map.
 
 ## Limits
 
@@ -252,9 +147,15 @@ qp     10000000  1284      5793        2142     1498       1598            1619
 - `onInsert` and `onUpdate` handlers and the `Walk` filter must not modify the trie or transaction that calls them.
 
 ## Reference
-- https://github.com/fanf2/qp
-- https://gitlab.nic.cz/knot/knot-dns/-/tree/v3.3.3/src/contrib/qp-trie?ref_type=tags
-- https://github.com/tatsushid/go-critbit
 
-## ❤
-qp-trie is awesome, thanks [@fanf2](https://github.com/fanf2)
+- [fanf2/qp](https://github.com/fanf2/qp) — original qp-trie / crit-bit research and C code by Tony Finch
+- [Knot DNS qp-trie](https://gitlab.nic.cz/knot/knot-dns/-/tree/v3.3.3/src/contrib/qp-trie?ref_type=tags) — production C implementation used in Knot DNS
+- [tatsushid/go-critbit](https://github.com/tatsushid/go-critbit) — related Go crit-bit tree
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## Thanks
+
+qp-trie is awesome — thanks [@fanf2](https://github.com/fanf2).
