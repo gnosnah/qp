@@ -1,3 +1,12 @@
+// Package qp implements a qp-trie (quelques-bits popcount patricia trie):
+// an ordered map from byte-string keys to values of any type.
+//
+// Keys may be any non-empty byte sequence up to 32767 bytes, including
+// embedded NULs and keys that are prefixes of other keys. Inserted keys are
+// copied; returned keys belong to the trie and must not be modified.
+//
+// The supported concurrency model is one writer and any number of readers.
+// Use [Trie.Txn] for copy-on-write snapshots; see [Txn] for transaction rules.
 package qp
 
 import (
@@ -9,16 +18,13 @@ import (
 type bitmapT = uint32      // bitmap type, 17 bits, first bit NO_BYTE
 type nibbleIndexT = uint16 // nibble index type
 
-// OnInsertValFn is a function type that processes a new value before insertion.
-// It takes the new value as input and returns the final value to be used.
+// OnInsertValFn processes a new value before it is stored on insert.
 // It must not modify the trie or transaction that calls it.
 type OnInsertValFn[V any] = func(newVal V) (finalVal V)
 
-// OnUpdateValFn is a function type that takes two parameters of type V (newVal and oldVal)
-// and returns a finalVal of type V. It is used to handle value updates by comparing
-// the new and old values and determining the final value to be used.
-// It must not modify the trie or transaction that calls it, and it
-// must return a new value instead of changing oldVal in place.
+// OnUpdateValFn chooses the value stored when an existing key is updated.
+// It must not modify the trie or transaction that calls it, and must return a
+// new value instead of changing oldVal in place.
 type OnUpdateValFn[V any] = func(newVal, oldVal V) (finalVal V)
 
 const (
@@ -41,14 +47,19 @@ func defaultOnInsert[V any](newVal V) V { return newVal }
 
 func defaultOnUpdate[V any](newVal, oldVal V) V { return newVal }
 
+// Option configures a Trie at construction time.
 type Option[V any] func(*Trie[V])
 
+// WithOnInsert sets the handler called for newly inserted values.
+// The value type of the trie is inferred from f.
 func WithOnInsert[V any](f OnInsertValFn[V]) Option[V] {
 	return func(tr *Trie[V]) {
 		tr.onInsert = f
 	}
 }
 
+// WithOnUpdate sets the handler called when an existing key is updated.
+// The value type of the trie is inferred from f.
 func WithOnUpdate[V any](f OnUpdateValFn[V]) Option[V] {
 	return func(tr *Trie[V]) {
 		tr.onUpdate = f
